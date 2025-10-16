@@ -1,0 +1,2 @@
+// go language placeholder
+export {};

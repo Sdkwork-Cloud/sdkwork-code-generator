@@ -1,0 +1,2 @@
+// OpenAPI module placeholder
+export {};

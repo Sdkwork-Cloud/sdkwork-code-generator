@@ -1,0 +1,2 @@
+// java language placeholder
+export {};
