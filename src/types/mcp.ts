@@ -110,9 +110,24 @@ export interface MCPGenerationOptions {
   /** 目标语言 */
   language: 'javascript' | 'typescript' | 'python' | 'go' | 'java';
   /** 框架类型 */
-  framework?: 'express' | 'koa' | 'nestjs' | 'fastify' | 'flask' | 'django' | 'gin' | 'springboot';
+  framework?:
+    | 'express'
+    | 'koa'
+    | 'nestjs'
+    | 'fastify'
+    | 'flask'
+    | 'django'
+    | 'gin'
+    | 'springboot';
   /** 包管理器 */
-  packageManager?: 'npm' | 'yarn' | 'pnpm' | 'pip' | 'go mod' | 'maven' | 'gradle';
+  packageManager?:
+    | 'npm'
+    | 'yarn'
+    | 'pnpm'
+    | 'pip'
+    | 'go mod'
+    | 'maven'
+    | 'gradle';
   /** 是否生成测试代码 */
   generateTests?: boolean;
   /** 是否生成文档 */

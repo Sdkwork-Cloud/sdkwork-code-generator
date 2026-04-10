@@ -54,7 +54,13 @@ export interface ContextMetadata {
   /** 源文件路径 */
   sourcePath?: string;
   /** 源文件类型 */
-  sourceType?: 'openapi' | 'swagger' | 'postman' | 'curl' | 'insomnia' | 'custom';
+  sourceType?:
+    | 'openapi'
+    | 'swagger'
+    | 'postman'
+    | 'curl'
+    | 'insomnia'
+    | 'custom';
   /** 源文件版本 */
   sourceVersion?: string;
   /** 目标语言 */
@@ -251,26 +257,63 @@ export interface ContextValidationResult {
 
 export interface ContextTransformer {
   /** 转换上下文 */
-  transform(context: GenerationContext, transformer: ContextTransformerFunction): Promise<GenerationContext>;
+  transform(
+    context: GenerationContext,
+    transformer: ContextTransformerFunction
+  ): Promise<GenerationContext>;
   /** 批量转换上下文 */
-  transformBatch(contexts: GenerationContext[], transformer: ContextTransformerFunction): Promise<GenerationContext[]>;
+  transformBatch(
+    contexts: GenerationContext[],
+    transformer: ContextTransformerFunction
+  ): Promise<GenerationContext[]>;
   /** 映射上下文 */
-  map(context: GenerationContext, mapper: ContextMapperFunction): Promise<unknown>;
+  map(
+    context: GenerationContext,
+    mapper: ContextMapperFunction
+  ): Promise<unknown>;
   /** 批量映射上下文 */
-  mapBatch(contexts: GenerationContext[], mapper: ContextMapperFunction): Promise<unknown[]>;
+  mapBatch(
+    contexts: GenerationContext[],
+    mapper: ContextMapperFunction
+  ): Promise<unknown[]>;
   /** 过滤上下文 */
-  filter(contexts: GenerationContext[], filter: ContextFilterFunction): Promise<GenerationContext[]>;
+  filter(
+    contexts: GenerationContext[],
+    filter: ContextFilterFunction
+  ): Promise<GenerationContext[]>;
   /** 排序上下文 */
-  sort(contexts: GenerationContext[], sorter: ContextSorterFunction): Promise<GenerationContext[]>;
+  sort(
+    contexts: GenerationContext[],
+    sorter: ContextSorterFunction
+  ): Promise<GenerationContext[]>;
   /** 分组上下文 */
-  group(contexts: GenerationContext[], grouper: ContextGrouperFunction): Promise<Record<string, GenerationContext[]>>;
+  group(
+    contexts: GenerationContext[],
+    grouper: ContextGrouperFunction
+  ): Promise<Record<string, GenerationContext[]>>;
   /** 聚合上下文 */
-  aggregate(contexts: GenerationContext[], aggregator: ContextAggregatorFunction): Promise<unknown>;
+  aggregate(
+    contexts: GenerationContext[],
+    aggregator: ContextAggregatorFunction
+  ): Promise<unknown>;
 }
 
-export type ContextTransformerFunction = (context: GenerationContext) => Promise<GenerationContext>;
-export type ContextMapperFunction = (context: GenerationContext) => Promise<unknown>;
-export type ContextFilterFunction = (context: GenerationContext) => Promise<boolean>;
-export type ContextSorterFunction = (a: GenerationContext, b: GenerationContext) => Promise<number>;
-export type ContextGrouperFunction = (context: GenerationContext) => Promise<string>;
-export type ContextAggregatorFunction = (contexts: GenerationContext[]) => Promise<unknown>;
+export type ContextTransformerFunction = (
+  context: GenerationContext
+) => Promise<GenerationContext>;
+export type ContextMapperFunction = (
+  context: GenerationContext
+) => Promise<unknown>;
+export type ContextFilterFunction = (
+  context: GenerationContext
+) => Promise<boolean>;
+export type ContextSorterFunction = (
+  a: GenerationContext,
+  b: GenerationContext
+) => Promise<number>;
+export type ContextGrouperFunction = (
+  context: GenerationContext
+) => Promise<string>;
+export type ContextAggregatorFunction = (
+  contexts: GenerationContext[]
+) => Promise<unknown>;

@@ -1,6 +1,14 @@
 import { Language, LanguageHttpLibs } from '@/types';
-import { RequestCodeGenerator, ApiRequestDefinition, CodeGenerateContext, CodeGenerateResult } from '@/types/code';
-import { getRequestCodeGenerator, getSupportedLanguages } from './languages/language-registry';
+import {
+  RequestCodeGenerator,
+  ApiRequestDefinition,
+  CodeGenerateContext,
+  CodeGenerateResult,
+} from '@/types/code';
+import {
+  getRequestCodeGenerator,
+  getSupportedLanguages,
+} from './languages/language-registry';
 
 /**
  * 统一的代码生成器工厂类
@@ -31,7 +39,10 @@ export class CodeGeneratorFactory {
    * @param library - HTTP库名称
    * @returns 代码生成器实例，如果不支持则返回null
    */
-  static getGenerator(language: Language, library: string): RequestCodeGenerator | null {
+  static getGenerator(
+    language: Language,
+    library: string
+  ): RequestCodeGenerator | null {
     return getRequestCodeGenerator(language, library);
   }
 
@@ -47,9 +58,11 @@ export class CodeGeneratorFactory {
   ): CodeGenerateResult {
     const { language, library } = context;
     const generator = getRequestCodeGenerator(language, library);
-    
+
     if (!generator) {
-      throw new Error(`Unsupported language/library combination: ${language}/${library}`);
+      throw new Error(
+        `Unsupported language/library combination: ${language}/${library}`
+      );
     }
 
     return generator.generate(requestDefinition, context);
@@ -67,12 +80,14 @@ export class CodeGeneratorFactory {
   ): CodeGenerateResult[] {
     const { language, library } = context;
     const generator = getRequestCodeGenerator(language, library);
-    
+
     if (!generator) {
-      throw new Error(`Unsupported language/library combination: ${language}/${library}`);
+      throw new Error(
+        `Unsupported language/library combination: ${language}/${library}`
+      );
     }
 
-    return requestDefinitions.map(definition => 
+    return requestDefinitions.map((definition) =>
       generator.generate(definition, context)
     );
   }
@@ -83,7 +98,7 @@ export class CodeGeneratorFactory {
    */
   static getLanguages(): string[] {
     const supported = getSupportedLanguages();
-    return [...new Set(supported.map(item => item.language))];
+    return [...new Set(supported.map((item) => item.language))];
   }
 
   /**
@@ -93,7 +108,7 @@ export class CodeGeneratorFactory {
    */
   static getLibraries(language: Language): string[] {
     const supported = getSupportedLanguages();
-    const languageConfig = supported.find(item => item.language === language);
+    const languageConfig = supported.find((item) => item.language === language);
     return languageConfig?.libs || [];
   }
 
@@ -104,7 +119,7 @@ export class CodeGeneratorFactory {
    */
   static getDefaultLibrary(language: Language): string {
     const supported = getSupportedLanguages();
-    const languageConfig = supported.find(item => item.language === language);
+    const languageConfig = supported.find((item) => item.language === language);
     return languageConfig?.defaultLib || '';
   }
 }
@@ -122,12 +137,17 @@ export * from './languages/ruby';
 export * from './languages/swift';
 export * from './languages/kotlin';
 export * from './languages/dart';
+export * from './languages/shell';
+export * from './languages/rust';
 
 // 导出类型定义
 export * from './languages/types';
 
 // 导出注册表相关函数
-export { getRequestCodeGenerator, getSupportedLanguages } from './languages/language-registry';
+export {
+  getRequestCodeGenerator,
+  getSupportedLanguages,
+} from './languages/language-registry';
 
 // 默认导出工厂类
 export default CodeGeneratorFactory;

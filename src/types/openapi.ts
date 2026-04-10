@@ -148,7 +148,15 @@ export interface OpenAPIParameter {
   /** 参数内容 */
   content?: Record<string, OpenAPIMediaType>;
   /** 参数样式 */
-  style?: 'matrix' | 'label' | 'form' | 'simple' | 'spaceDelimited' | 'pipeDelimited' | 'deepObject';
+  style?:
+    | 'matrix'
+    | 'label'
+    | 'form'
+    | 'cookie'
+    | 'simple'
+    | 'spaceDelimited'
+    | 'pipeDelimited'
+    | 'deepObject';
   /** 是否展开 */
   explode?: boolean;
   /** 是否允许保留 */
@@ -218,7 +226,14 @@ export interface OpenAPIExternalDocumentation {
 
 export interface OpenAPISchema {
   /** JSON Schema 兼容类型定义 */
-  type?: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object' | 'null';
+  type?:
+    | 'string'
+    | 'number'
+    | 'integer'
+    | 'boolean'
+    | 'array'
+    | 'object'
+    | 'null';
   /** 模式 */
   format?: string;
   /** 描述 */

@@ -58,69 +58,80 @@ import { RetrofitKotlinRequestCodeGenerator } from './kotlin/retrofit';
 // Dart语言生成器
 import { HttpDartRequestCodeGenerator } from './dart/http';
 import { DioDartRequestCodeGenerator } from './dart/dio';
+import { CurlShellRequestCodeGenerator } from './shell/curl';
+import { ReqwestRustRequestCodeGenerator } from './rust/reqwest';
 
 /**
  * 语言生成器注册表
  * 映射语言和HTTP库到对应的代码生成器类
  */
-export const languageGeneratorRegistry: Record<string, new () => RequestCodeGenerator> = {
+export const languageGeneratorRegistry: Record<
+  string,
+  new () => RequestCodeGenerator
+> = {
   // JavaScript
   'javascript-axios': AxiosJavaScriptRequestCodeGenerator,
   'javascript-fetch': FetchJavaScriptRequestCodeGenerator,
   'javascript-got': GotJavaScriptRequestCodeGenerator,
   'javascript-superagent': SuperagentJavaScriptRequestCodeGenerator,
-  
+
   // TypeScript
   'typescript-axios': AxiosTypeScriptRequestCodeGenerator,
   'typescript-fetch': FetchTypeScriptRequestCodeGenerator,
   'typescript-got': GotTypeScriptRequestCodeGenerator,
   'typescript-superagent': SuperagentTypeScriptRequestCodeGenerator,
-  
+
   // Python
   'python-requests': RequestsPythonRequestCodeGenerator,
   'python-aiohttp': AiohttpPythonRequestCodeGenerator,
   'python-httpx': HttpxPythonRequestCodeGenerator,
-  
+
   // Go
   'go-net/http': NetHttpGoRequestCodeGenerator,
   'go-fasthttp': FasthttpGoRequestCodeGenerator,
   'go-resty': RestyGoRequestCodeGenerator,
-  
+
   // Java
   'java-okhttp': OkHttpJavaRequestCodeGenerator,
   'java-apache-httpclient': ApacheHttpClientJavaRequestCodeGenerator,
   'java-retrofit': RetrofitJavaRequestCodeGenerator,
   'java-unirest': UnirestJavaRequestCodeGenerator,
-  
+
   // C++
   'cpp-cpprest': CpprestCppRequestCodeGenerator,
   'cpp-cpp-httplib': CppHttplibCppRequestCodeGenerator,
   'cpp-boost-beast': BoostBeastCppRequestCodeGenerator,
-  
+
   // C#
   'csharp-httpclient': HttpClientCSharpRequestCodeGenerator,
   'csharp-restsharp': RestsharpCsharpRequestCodeGenerator,
   'csharp-refit': RefitCsharpRequestCodeGenerator,
-  
+
   // PHP
   'php-guzzle': GuzzlePhpRequestCodeGenerator,
   'php-curl': CurlPhpRequestCodeGenerator,
-  
+
   // Ruby
   'ruby-faraday': FaradayRubyRequestCodeGenerator,
   'ruby-httparty': HttpartyRubyRequestCodeGenerator,
-  
+
   // Swift
   'swift-alamofire': AlamofireSwiftRequestCodeGenerator,
   'swift-urlsession': UrlsessionSwiftRequestCodeGenerator,
-  
+
   // Kotlin
   'kotlin-okhttp': OkHttpKotlinRequestCodeGenerator,
   'kotlin-retrofit': RetrofitKotlinRequestCodeGenerator,
-  
+
   // Dart
   'dart-http': HttpDartRequestCodeGenerator,
   'dart-dio': DioDartRequestCodeGenerator,
+
+  // Shell
+  'shell-curl': CurlShellRequestCodeGenerator,
+
+  // Rust
+  'rust-reqwest': ReqwestRustRequestCodeGenerator,
 };
 
 /**
@@ -129,14 +140,17 @@ export const languageGeneratorRegistry: Record<string, new () => RequestCodeGene
  * @param library - HTTP库名称
  * @returns 代码生成器实例，如果找不到则返回null
  */
-export function getRequestCodeGenerator(language: Language, library: string): RequestCodeGenerator | null {
+export function getRequestCodeGenerator(
+  language: Language,
+  library: string
+): RequestCodeGenerator | null {
   const key = `${language}-${library}`;
   const GeneratorClass = languageGeneratorRegistry[key];
-  
+
   if (GeneratorClass) {
     return new GeneratorClass();
   }
-  
+
   return null;
 }
 

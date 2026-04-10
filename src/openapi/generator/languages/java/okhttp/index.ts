@@ -1,40 +1,21 @@
 import { BaseRequestCodeGenerator } from '@/openapi/generator/generator';
-import { Language, HttpMethod, OpenAPIOperation, ExampleOpenAPIParameter, CodeGenerateContext } from '@/types';
+import {
+  CodeGenerateContext,
+  ExampleOpenAPIParameter,
+  HttpMethod,
+  Language,
+  OpenAPIOperation,
+} from '@/types';
 
-/**
- * Java OkHttp HTTP请求代码生成器
- */
 export class OkHttpJavaRequestCodeGenerator extends BaseRequestCodeGenerator {
-  
-  /**
-   * 获取目标编程语言
-   * @returns 编程语言标识符
-   */
   getLanguage(): Language {
     return 'java';
   }
 
-  /**
-   * 获取使用的HTTP库名称
-   * @returns HTTP库名称
-   */
   getLibrary(): string {
     return 'okhttp';
   }
 
-  /**
-   * 生成具体的HTTP请求代码
-   * @param path - 完整的请求Path
-   * @param method - 请求方法
-   * @param baseUrl - baseUrl
-   * @param operation - OpenAPI操作定义
-   * @param pathVariables - 路径参数示例数据
-   * @param headers - 请求头示例数据
-   * @param queryParams - 查询参数示例数据
-   * @param requestBody - 请求体示例数据
-   * @param context - 代码生成上下文
-   * @returns 生成的代码字符串
-   */
   generateCode(
     path: string,
     method: HttpMethod,
@@ -46,15 +27,19 @@ export class OkHttpJavaRequestCodeGenerator extends BaseRequestCodeGenerator {
     requestBody: any,
     context: CodeGenerateContext
   ): string {
-    // 生成Java类和方法
-    const classCode = this.generateJavaClass(baseUrl, path, method, cookies, headers, queryParams, requestBody, operation);
-    
-    return classCode;
+    return this.generateJavaClass(
+      baseUrl,
+      path,
+      method,
+      cookies,
+      headers,
+      queryParams,
+      requestBody,
+      operation,
+      context
+    );
   }
 
-  /**
-   * 生成Java类代码
-   */
   private generateJavaClass(
     baseUrl: string,
     path: string,
@@ -63,62 +48,73 @@ export class OkHttpJavaRequestCodeGenerator extends BaseRequestCodeGenerator {
     headers: ExampleOpenAPIParameter[],
     queryParams: ExampleOpenAPIParameter[],
     requestBody: any,
-    operation: OpenAPIOperation
+    operation: OpenAPIOperation,
+    context: CodeGenerateContext
   ): string {
-    const operationId = operation.operationId || 'apiRequest';
-    const className = this.toCamelCase(operationId, true);
-    const methodName = this.toCamelCase(operationId, false);
-    const url = `${baseUrl}${path}`;
-    
-    // 构建查询参数
-    const queryParamsCode = this.buildQueryParamsCode(queryParams);
-    
-    // 构建请求体
-    const requestBodyCode = this.buildRequestBodyCode(requestBody, method);
-    
-    // 构建请求头
-    const headersCode = this.buildHeadersCode(headers);
-    
-    // 构建cookies
-    const cookiesCode = this.buildCookiesCode(cookies);
-    
-    return `import okhttp3.*;
+    const className = this.toIdentifier(
+      operation.operationId,
+      'ApiRequest',
+      'pascal'
+    );
+    const methodName = this.toIdentifier(
+      operation.operationId,
+      'apiRequest',
+      'camel'
+    );
+    const url = this.escapeDoubleQuotedString(
+      this.buildRequestUrl(baseUrl, path)
+    );
+    const expectedSuccessStatusCode =
+      this.getExpectedSuccessStatusCode(context);
+    const successStatusCheck = this.usesAny2xxSuccessStatus(context)
+      ? 'response.code() < 200 || response.code() >= 300'
+      : `response.code() != ${expectedSuccessStatusCode}`;
+    const responseHandlingCode = this.isBinaryResponse(context)
+      ? `byte[] data = response.body().bytes();
+            System.out.println("Response bytes: " + data.length);`
+      : `System.out.println("Response: " + response.body().string());`;
+    const requestBodySetup = this.hasRequestBody(method, requestBody)
+      ? this.buildRequestBodySetup(requestBody, context)
+      : '';
+    const requestMethod = this.hasRequestBody(method, requestBody)
+      ? `.${method.toLowerCase()}(requestBody)`
+      : `.${method.toLowerCase()}()`;
+
+    return `import java.nio.file.Files;
+import java.nio.file.Paths;
+import okhttp3.*;
 
 public class ${className} {
-    
+
     private static final OkHttpClient client = new OkHttpClient();
-    
+
     /**
-     * ${operation.summary || operation.description || 'API请求'}
+     * ${operation.summary || operation.description || 'API request'}
      */
     public static void ${methodName}() throws Exception {
-        // 构建URL
         HttpUrl.Builder urlBuilder = HttpUrl.parse("${url}").newBuilder();
-        ${queryParamsCode}
-        
-        // 构建请求
+        ${this.buildQueryParamsCode(queryParams)}
+
+        ${requestBodySetup}
         Request.Builder requestBuilder = new Request.Builder()
             .url(urlBuilder.build())
-            .${method.toLowerCase()}(${requestBodyCode});
-        
-        // 设置cookies
-        ${cookiesCode}
-        
-        // 设置请求头
-        ${headersCode}
-        
+            ${requestMethod};
+
+        ${this.buildCookiesCode(cookies)}
+        ${this.buildHeadersCode(headers)}
+
         Request request = requestBuilder.build();
-        
+
         try (Response response = client.newCall(request).execute()) {
-            if (!response.isSuccessful()) {
+            if (${successStatusCheck}) {
                 throw new RuntimeException("Unexpected code " + response);
             }
-            
+
             System.out.println("Status: " + response.code());
-            System.out.println("Response: " + response.body().string());
+            ${responseHandlingCode}
         }
     }
-    
+
     public static void main(String[] args) {
         try {
             ${methodName}();
@@ -129,75 +125,143 @@ public class ${className} {
 }`;
   }
 
-  /**
-   * 构建查询参数代码
-   */
   private buildQueryParamsCode(queryParams: ExampleOpenAPIParameter[]): string {
-    if (queryParams.length === 0) {
+    const paramEntries = this.buildQueryParameterEntries(queryParams);
+
+    if (paramEntries.length === 0) {
       return '';
     }
-    
-    const paramEntries = queryParams.map(param => 
-      `urlBuilder.addQueryParameter("${param.name}", "${param.value}");`
+
+    if (this.hasAllowReservedQueryParameters(queryParams)) {
+      return paramEntries
+        .map(
+          (param) =>
+            `urlBuilder.addEncodedQueryParameter("${this.escapeDoubleQuoted(
+              param.name
+            )}", "${this.escapeDoubleQuoted(
+              this.encodeQueryParameterValue(param.value, param.allowReserved)
+            )}");`
+        )
+        .join('\n        ');
+    }
+
+    return paramEntries
+      .map(
+        (param) =>
+          `urlBuilder.addQueryParameter("${this.escapeDoubleQuoted(
+            param.name
+          )}", "${this.escapeDoubleQuoted(param.value)}");`
+      )
+      .join('\n        ');
+  }
+
+  private buildRequestBodySetup(
+    requestBody: any,
+    context: CodeGenerateContext
+  ): string {
+    if (this.isBinaryRequestBody(context)) {
+      const contentType =
+        context.requestContentType || 'application/octet-stream';
+      return `RequestBody requestBody = RequestBody.create(MediaType.parse("${contentType}"), Files.readAllBytes(Paths.get("${this.escapeDoubleQuoted(
+        this.getBinaryRequestBodyFileName(requestBody)
+      )}")));`;
+    }
+
+    if (this.usesStringRequestBody(context)) {
+      const contentType = context.requestContentType || 'text/plain';
+      return `RequestBody requestBody = RequestBody.create(MediaType.parse("${contentType}"), "${this.escapeDoubleQuoted(
+        this.serializeStringRequestBody(requestBody, context)
+      )}");`;
+    }
+
+    if (this.isMultipartRequestBody(context)) {
+      return this.buildMultipartRequestBodySetup(requestBody);
+    }
+
+    const jsonBody = JSON.stringify(requestBody, null, 2).replace(/"/g, '\\"');
+    const contentType = context.requestContentType || 'application/json';
+    return `RequestBody requestBody = RequestBody.create(
+            MediaType.parse("${contentType}"),
+            "${jsonBody}");`;
+  }
+
+  private buildMultipartRequestBodySetup(requestBody: any): string {
+    const fieldLines = this.getMultipartFieldParts(requestBody).map(
+      (part) =>
+        `            .addFormDataPart("${this.escapeDoubleQuoted(
+          part.name
+        )}", "${this.escapeDoubleQuoted(part.value)}")`
     );
-    
-    return paramEntries.join('\n        ');
+    const filePart = this.getMultipartFileParts(requestBody)[0];
+    const fileLines = filePart
+      ? [
+          `            .addFormDataPart("${this.escapeDoubleQuoted(
+            filePart.name
+          )}", "${this.escapeDoubleQuoted(
+            filePart.filename || filePart.name
+          )}", RequestBody.create(MediaType.parse("${this.escapeDoubleQuoted(
+            filePart.contentType || 'application/octet-stream'
+          )}"), "${this.escapeDoubleQuoted(filePart.value)}".getBytes()))`,
+        ]
+      : [];
+
+    return `RequestBody requestBody = new MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+${[...fieldLines, ...fileLines].join('\n')}
+            .build();`;
   }
 
-  /**
-   * 构建请求体代码
-   */
-  private buildRequestBodyCode(requestBody: any, method: HttpMethod): string {
-    if (!['POST', 'PUT', 'PATCH'].includes(method) || !requestBody) {
-      return '';
-    }
-    
-    const jsonBody = JSON.stringify(requestBody, null, 2);
-    return `RequestBody.create(
-            MediaType.parse("application/json"), 
-            "${jsonBody.replace(/"/g, '\\"')}")`;
-  }
-
-  /**
-   * 构建请求头代码
-   */
   private buildHeadersCode(headers: ExampleOpenAPIParameter[]): string {
     if (headers.length === 0) {
       return '';
     }
-    
-    const headerEntries = headers.map(header => 
-      `requestBuilder.addHeader("${header.name}", "${header.value}");`
-    );
-    
-    return headerEntries.join('\n        ');
+
+    return headers
+      .map(
+        (header) =>
+          `requestBuilder.addHeader("${
+            header.name
+          }", "${this.escapeDoubleQuoted(
+            this.serializeHeaderParameterValue(header)
+          )}");`
+      )
+      .join('\n        ');
   }
 
-  /**
-   * 构建cookies代码
-   */
   private buildCookiesCode(cookies: ExampleOpenAPIParameter[]): string {
     if (cookies.length === 0) {
       return '';
     }
-    
-    const cookieEntries = cookies.map(cookie => 
-      `requestBuilder.addHeader("Cookie", "${cookie.name}=${cookie.value}");`
-    );
-    
-    return cookieEntries.join('\n        ');
+
+    return `requestBuilder.addHeader("Cookie", "${this.escapeDoubleQuoted(
+      this.buildCookieHeaderValue(cookies)
+    )}");`;
   }
 
-  /**
-   * 转换为驼峰命名
-   */
   private toCamelCase(str: string, firstUpper: boolean): string {
     const words = str.split(/[_\-\s]/);
-    return words.map((word, index) => {
-      if (index === 0 && !firstUpper) {
-        return word.toLowerCase();
-      }
-      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
-    }).join('');
+    return words
+      .map((word, index) => {
+        if (index === 0 && !firstUpper) {
+          return word.toLowerCase();
+        }
+        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+      })
+      .join('');
+  }
+
+  private hasRequestBody(method: HttpMethod, requestBody: any): boolean {
+    return (
+      ['POST', 'PUT', 'PATCH'].includes(method) &&
+      requestBody !== undefined &&
+      requestBody !== null
+    );
+  }
+
+  private escapeDoubleQuoted(value: string): string {
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\r?\n/g, '\\n');
   }
 }

@@ -59,7 +59,10 @@ export interface ChatCompletionRequest {
   /** 工具定义列表 */
   tools?: ChatCompletionTool[];
   /** 工具调用控制 */
-  tool_choice?: 'none' | 'auto' | { type: 'function'; function: { name: string } };
+  tool_choice?:
+    | 'none'
+    | 'auto'
+    | { type: 'function'; function: { name: string } };
   /** 最大令牌数 */
   max_tokens?: number;
   /** 温度参数 */
@@ -190,7 +193,14 @@ export interface ChatCompletionChoice {
   /** 消息 */
   message: ChatCompletionMessage;
   /** 完成原因 */
-  finish_reason: 'stop' | 'length' | 'function_call' | 'tool_calls' | 'content_filter' | 'thinking' | null;
+  finish_reason:
+    | 'stop'
+    | 'length'
+    | 'function_call'
+    | 'tool_calls'
+    | 'content_filter'
+    | 'thinking'
+    | null;
   /** 日志概率 */
   logprobs?: ChatCompletionLogprobs;
 }
@@ -258,7 +268,13 @@ export interface ChatCompletionStreamChoice {
   /** 增量消息 */
   delta: ChatCompletionDeltaMessage;
   /** 完成原因 */
-  finish_reason: 'stop' | 'length' | 'function_call' | 'tool_calls' | 'content_filter' | null;
+  finish_reason:
+    | 'stop'
+    | 'length'
+    | 'function_call'
+    | 'tool_calls'
+    | 'content_filter'
+    | null;
   /** 日志概率 */
   logprobs?: ChatCompletionLogprobs;
 }
@@ -321,7 +337,15 @@ export interface ChatCompletionCreateOptions {
  */
 export interface ChatCompletionProviderConfig {
   /** 提供者名称 */
-  provider: 'openai' | 'anthropic' | 'cohere' | 'huggingface' | 'azure' | 'aws' | 'google' | 'custom';
+  provider:
+    | 'openai'
+    | 'anthropic'
+    | 'cohere'
+    | 'huggingface'
+    | 'azure'
+    | 'aws'
+    | 'google'
+    | 'custom';
   /** 模型名称 */
   model: string;
   /** API密钥 */

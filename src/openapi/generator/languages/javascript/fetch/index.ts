@@ -1,40 +1,21 @@
 import { BaseRequestCodeGenerator } from '@/openapi/generator/generator';
-import { Language, HttpMethod, OpenAPIOperation, ExampleOpenAPIParameter, CodeGenerateContext } from '@/types';
+import {
+  CodeGenerateContext,
+  ExampleOpenAPIParameter,
+  HttpMethod,
+  Language,
+  OpenAPIOperation,
+} from '@/types';
 
-/**
- * JavaScript Fetch API HTTP请求代码生成器
- */
 export class FetchJavaScriptRequestCodeGenerator extends BaseRequestCodeGenerator {
-  
-  /**
-   * 获取目标编程语言
-   * @returns 编程语言标识符
-   */
   getLanguage(): Language {
     return 'javascript';
   }
 
-  /**
-   * 获取使用的HTTP库名称
-   * @returns HTTP库名称
-   */
   getLibrary(): string {
     return 'fetch';
   }
 
-  /**
-   * 生成具体的HTTP请求代码
-   * @param path - 完整的请求Path
-   * @param method - 请求方法
-   * @param baseUrl - baseUrl
-   * @param operation - OpenAPI操作定义
-   * @param pathVariables - 路径参数示例数据
-   * @param headers - 请求头示例数据
-   * @param queryParams - 查询参数示例数据
-   * @param requestBody - 请求体示例数据
-   * @param context - 代码生成上下文
-   * @returns 生成的代码字符串
-   */
   generateCode(
     path: string,
     method: HttpMethod,
@@ -46,29 +27,66 @@ export class FetchJavaScriptRequestCodeGenerator extends BaseRequestCodeGenerato
     requestBody: any,
     context: CodeGenerateContext
   ): string {
-    const operationId = operation.operationId || 'apiRequest';
-    const url = `${baseUrl}${path}`;
-    
-    // 构建请求配置
-    const config = this.buildFetchConfig(method, cookies, headers, queryParams, requestBody);
-    
-    return `/**
- * ${operation.summary || operation.description || 'API请求'}
+    const operationId = this.toIdentifier(
+      operation.operationId,
+      'apiRequest',
+      'camel'
+    );
+    const url = this.escapeDoubleQuotedString(
+      this.buildRequestUrl(baseUrl, path)
+    );
+    const binarySetup = this.isBinaryRequestBody(context)
+      ? `    const requestBody = await readFile('${this.escapeSingleQuoted(
+          this.getBinaryRequestBodyFileName(requestBody)
+        )}');\n\n`
+      : '';
+    const multipartSetup =
+      this.isMultipartRequestBody(context) && requestBody
+        ? `    ${this.buildMultipartFormDataSetup(requestBody)}\n\n`
+        : '';
+    const config = this.buildFetchConfig(
+      method,
+      cookies,
+      headers,
+      requestBody,
+      context
+    );
+    const expectedSuccessStatusCode =
+      this.getExpectedSuccessStatusCode(context);
+    const successStatusCheck = this.usesAny2xxSuccessStatus(context)
+      ? 'response.status < 200 || response.status >= 300'
+      : `response.status !== ${expectedSuccessStatusCode}`;
+    const responseDataExpression = this.isBinaryResponse(context)
+      ? 'await response.arrayBuffer()'
+      : this.usesStringResponse(context)
+      ? 'await response.text()'
+      : 'await response.json()';
+    const responseLoggingCode = this.isBinaryResponse(context)
+      ? "console.log('Response bytes:', data.byteLength);"
+      : "console.log('Response:', data);";
+
+    const binaryImport = this.isBinaryRequestBody(context)
+      ? `const { readFile } = require('fs/promises');\n\n`
+      : '';
+
+    return `${binaryImport}/**
+ * ${operation.summary || operation.description || 'API request'}
  * ${operation.description ? ` * ${operation.description}` : ''}
  */
 async function ${operationId}() {
-    const url = "${url}";
+    let url = "${url}";
     ${this.buildQueryParamsCode(queryParams)}
-    
+${binarySetup}${multipartSetup}
+
     try {
         const response = await fetch(url, ${config});
-        
-        if (!response.ok) {
+
+        if (${successStatusCheck}) {
             throw new Error(\`HTTP error! status: \${response.status}\`);
         }
-        
-        const data = await response.json();
-        console.log('Response:', data);
+
+        const data = ${responseDataExpression};
+        ${responseLoggingCode}
         return data;
     } catch (error) {
         console.error('Error:', error);
@@ -76,77 +94,149 @@ async function ${operationId}() {
     }
 }
 
-// 调用示例
+// Example usage
 ${operationId}();`;
   }
 
-  /**
-   * 构建Fetch请求配置
-   */
   private buildFetchConfig(
     method: HttpMethod,
     cookies: ExampleOpenAPIParameter[],
     headers: ExampleOpenAPIParameter[],
-    queryParams: ExampleOpenAPIParameter[],
-    requestBody: any
+    requestBody: any,
+    context: CodeGenerateContext
   ): string {
-    const configParts: string[] = [];
+    const configParts: string[] = [`method: '${method}'`];
+    const requestHeaders = this.buildRequestHeaders(
+      cookies,
+      headers,
+      method,
+      requestBody,
+      context
+    );
 
-    configParts.push(`method: '${method}'`);
-
-    // 添加cookies
     if (cookies.length > 0) {
       configParts.push(`credentials: 'include'`);
-      const cookiesHeader = this.buildCookiesHeader(cookies);
-      configParts.push(`headers: { 'Cookie': '${cookiesHeader}' }`);
     }
 
-    // 添加请求头
-    if (headers.length > 0) {
-      const headersObj = this.buildHeadersObject(headers);
-      configParts.push(`headers: ${headersObj}`);
+    if (requestHeaders.length > 0) {
+      configParts.push(`headers: ${this.buildHeadersObject(requestHeaders)}`);
     }
 
-    // 添加请求体
-    if (['POST', 'PUT', 'PATCH'].includes(method) && requestBody) {
-      configParts.push(`body: JSON.stringify(${JSON.stringify(requestBody, null, 2)})`);
+    if (this.hasRequestBody(method, requestBody)) {
+      if (this.isMultipartRequestBody(context)) {
+        configParts.push('body: formData');
+      } else if (this.isBinaryRequestBody(context)) {
+        configParts.push('body: requestBody');
+      } else if (this.usesStringRequestBody(context)) {
+        configParts.push(
+          `body: '${this.escapeSingleQuoted(
+            this.serializeStringRequestBody(requestBody, context)
+          )}'`
+        );
+      } else {
+        configParts.push(
+          `body: JSON.stringify(${JSON.stringify(requestBody, null, 2)})`
+        );
+      }
     }
 
     return `{\n        ${configParts.join(',\n        ')}\n    }`;
   }
 
-  /**
-   * 构建请求头对象
-   */
+  private buildRequestHeaders(
+    cookies: ExampleOpenAPIParameter[],
+    headers: ExampleOpenAPIParameter[],
+    method: HttpMethod,
+    requestBody: any,
+    context: CodeGenerateContext
+  ): ExampleOpenAPIParameter[] {
+    const requestHeaders = [...headers];
+
+    if (
+      this.hasRequestBody(method, requestBody) &&
+      this.shouldAutoAddContentTypeHeader(context) &&
+      !requestHeaders.some(
+        (header) => header.name.toLowerCase() === 'content-type'
+      )
+    ) {
+      requestHeaders.push({
+        name: 'Content-Type',
+        in: 'header',
+        required: false,
+        schema: { type: 'string' },
+        value: context.requestContentType,
+      });
+    }
+
+    return requestHeaders;
+  }
+
   private buildHeadersObject(headers: ExampleOpenAPIParameter[]): string {
-    const headerEntries = headers.map(header => 
-      `'${header.name}': '${header.value}'`
+    const headerEntries = headers.map(
+      (header) =>
+        `'${this.escapeSingleQuoted(header.name)}': '${this.escapeSingleQuoted(
+          this.serializeHeaderParameterValue(header)
+        )}'`
     );
+
     return `{\n            ${headerEntries.join(',\n            ')}\n        }`;
   }
 
-  /**
-   * 构建cookies字符串
-   */
-  private buildCookiesHeader(cookies: ExampleOpenAPIParameter[]): string {
-    const cookieEntries = cookies.map(cookie => 
-      `${cookie.name}=${cookie.value}`
-    );
-    return cookieEntries.join('; ');
-  }
-
-  /**
-   * 构建查询参数代码
-   */
   private buildQueryParamsCode(queryParams: ExampleOpenAPIParameter[]): string {
-    if (queryParams.length === 0) {
+    if (this.hasAllowReservedQueryParameters(queryParams)) {
+      return `const queryString = '${this.escapeSingleQuoted(
+        this.buildSerializedQueryString(queryParams)
+      )}';\n    if (queryString) {\n        url += (url.includes('?') ? '&' : '?') + queryString;\n    }`;
+    }
+
+    const paramEntries = this.buildQueryParameterEntries(queryParams);
+
+    if (paramEntries.length === 0) {
       return '';
     }
-    
-    const paramEntries = queryParams.map(param => 
-      `url += (url.includes('?') ? '&' : '?') + '${param.name}=' + encodeURIComponent('${param.value}');`
+
+    const paramLines = paramEntries.map(
+      (param) =>
+        `queryParams.append('${this.escapeSingleQuoted(
+          param.name
+        )}', '${this.escapeSingleQuoted(param.value)}');`
     );
-    
-    return paramEntries.join('\n    ');
+
+    return `const queryParams = new URLSearchParams();\n    ${paramLines.join(
+      '\n    '
+    )}\n    const queryString = queryParams.toString();\n    if (queryString) {\n        url += (url.includes('?') ? '&' : '?') + queryString;\n    }`;
+  }
+
+  private buildMultipartFormDataSetup(requestBody: any): string {
+    const multipartLines = this.getMultipartParts(requestBody).map((part) =>
+      part.kind === 'file'
+        ? `formData.append('${this.escapeSingleQuoted(
+            part.name
+          )}', new Blob(['${this.escapeSingleQuoted(
+            part.value
+          )}']), '${this.escapeSingleQuoted(part.filename || part.name)}');`
+        : `formData.append('${this.escapeSingleQuoted(
+            part.name
+          )}', '${this.escapeSingleQuoted(part.value)}');`
+    );
+
+    return `const formData = new FormData();\n    ${multipartLines.join(
+      '\n    '
+    )}`;
+  }
+
+  private hasRequestBody(method: HttpMethod, requestBody: any): boolean {
+    return (
+      ['POST', 'PUT', 'PATCH'].includes(method) &&
+      requestBody !== undefined &&
+      requestBody !== null
+    );
+  }
+
+  private escapeSingleQuoted(value: string): string {
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/'/g, "\\'")
+      .replace(/\r?\n/g, '\\n');
   }
 }

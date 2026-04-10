@@ -1,40 +1,21 @@
 import { BaseRequestCodeGenerator } from '@/openapi/generator/generator';
-import { Language, HttpMethod, OpenAPIOperation, ExampleOpenAPIParameter, CodeGenerateContext } from '@/types';
+import {
+  CodeGenerateContext,
+  ExampleOpenAPIParameter,
+  HttpMethod,
+  Language,
+  OpenAPIOperation,
+} from '@/types';
 
-/**
- * Swift URLSession HTTP请求代码生成器
- */
 export class UrlsessionSwiftRequestCodeGenerator extends BaseRequestCodeGenerator {
-  
-  /**
-   * 获取目标编程语言
-   * @returns 编程语言标识符
-   */
   getLanguage(): Language {
     return 'swift';
   }
 
-  /**
-   * 获取使用的HTTP库名称
-   * @returns HTTP库名称
-   */
   getLibrary(): string {
     return 'urlsession';
   }
 
-  /**
-   * 生成具体的HTTP请求代码
-   * @param path - 完整的请求Path
-   * @param method - 请求方法
-   * @param baseUrl - baseUrl
-   * @param operation - OpenAPI操作定义
-   * @param cookies - cookies示例数据
-   * @param headers - 请求头示例数据
-   * @param queryParams - 查询参数示例数据
-   * @param requestBody - 请求体示例数据
-   * @param context - 代码生成上下文
-   * @returns 生成的代码字符串
-   */
   generateCode(
     path: string,
     method: HttpMethod,
@@ -46,120 +27,222 @@ export class UrlsessionSwiftRequestCodeGenerator extends BaseRequestCodeGenerato
     requestBody: any,
     context: CodeGenerateContext
   ): string {
-    const operationId = operation.operationId || 'apiRequest';
-    const url = `${baseUrl}${path}`;
-    
+    const operationId = this.toIdentifier(
+      operation.operationId,
+      'apiRequest',
+      'camel'
+    );
+    const url = this.escapeDoubleQuotedString(
+      this.buildRequestUrl(baseUrl, path)
+    );
+    const expectedSuccessStatusCode =
+      this.getExpectedSuccessStatusCode(context);
+    const successStatusCheck = this.usesAny2xxSuccessStatus(context)
+      ? 'httpResponse.statusCode < 200 || httpResponse.statusCode >= 300'
+      : `httpResponse.statusCode != ${expectedSuccessStatusCode}`;
+    const responseHandlingCode = this.isBinaryResponse(context)
+      ? `let responseData = data
+        print("Response bytes: \\(responseData.count)")`
+      : this.usesStringResponse(context)
+      ? `let responseText = String(data: data, encoding: .utf8) ?? ""
+        print("Response: \\(responseText)")`
+      : `do {
+            let jsonObject = try JSONSerialization.jsonObject(with: data)
+            print("Response: \\(jsonObject)")
+        } catch {
+            print("JSON parsing error: \\(error)")
+        }`;
+
     return `import Foundation
 
 /*
-${operation.summary || operation.description || 'API请求'}
+${operation.summary || operation.description || 'API request'}
 ${operation.description ? ` * ${operation.description}` : ''}
 */
 
 func ${operationId}() {
-    let urlString = "${url}"
+    var urlString = "${url}"
     ${this.buildQueryParamsCode(queryParams)}
-    
+
     guard let url = URL(string: urlString) else {
         fatalError("Invalid URL")
     }
-    
+
     var request = URLRequest(url: url)
     request.httpMethod = "${method.toUpperCase()}"
-    
-    ${this.buildCookiesCode(cookies, 'request')}
-    ${this.buildHeadersCode(headers, 'request')}
-    ${this.buildRequestBodyCode(method, requestBody, 'request')}
-    
+
+    ${this.buildHeadersCode(
+      cookies,
+      headers,
+      method,
+      requestBody,
+      'request',
+      context
+    )}
+    ${this.buildRequestBodyCode(method, requestBody, 'request', context)}
+
     let task = URLSession.shared.dataTask(with: request) { data, response, error in
         if let error = error {
             print("Error: \\(error)")
             return
         }
-        
+
         guard let httpResponse = response as? HTTPURLResponse else {
             print("Invalid response")
             return
         }
-        
-        if httpResponse.statusCode != 200 {
+
+        if ${successStatusCheck} {
             print("HTTP error! status: \\(httpResponse.statusCode)")
             return
         }
-        
+
         guard let data = data else {
             print("No data received")
             return
         }
-        
-        do {
-            let jsonObject = try JSONSerialization.jsonObject(with: data)
-            print("Response: \\(jsonObject)")
-        } catch {
-            print("JSON parsing error: \\(error)")
-        }
+
+        ${responseHandlingCode}
     }
-    
+
     task.resume()
 }
 
-// 调用示例
 ${operationId}()`;
   }
 
-  /**
-   * 构建cookies代码
-   */
-  private buildCookiesCode(cookies: ExampleOpenAPIParameter[], requestVar: string): string {
-    if (cookies.length === 0) {
+  private buildHeadersCode(
+    cookies: ExampleOpenAPIParameter[],
+    headers: ExampleOpenAPIParameter[],
+    method: HttpMethod,
+    requestBody: any,
+    requestVar: string,
+    context: CodeGenerateContext
+  ): string {
+    const requestHeaders = [...headers];
+
+    if (cookies.length > 0) {
+      requestHeaders.push({
+        name: 'Cookie',
+        in: 'header',
+        required: false,
+        schema: { type: 'string' },
+        value: this.buildCookieHeaderValue(cookies),
+      });
+    }
+
+    if (
+      this.hasRequestBody(method, requestBody) &&
+      this.shouldAutoAddContentTypeHeader(context) &&
+      !requestHeaders.some(
+        (header) => header.name.toLowerCase() === 'content-type'
+      )
+    ) {
+      requestHeaders.push({
+        name: 'Content-Type',
+        in: 'header',
+        required: false,
+        schema: { type: 'string' },
+        value: context.requestContentType,
+      });
+    }
+
+    if (requestHeaders.length === 0) {
       return '';
     }
-    
-    const cookieEntries = cookies.map(cookie => 
-      `"${cookie.name}=${cookie.value}"`
-    );
-    
-    return `${requestVar}.setValue("${cookieEntries.join('; ')}", forHTTPHeaderField: "Cookie")`;
+
+    return requestHeaders
+      .map(
+        (header) =>
+          `${requestVar}.setValue("${this.escapeSwiftString(
+            this.serializeHeaderParameterValue(header)
+          )}", forHTTPHeaderField: "${this.escapeSwiftString(header.name)}")`
+      )
+      .join('\n    ');
   }
 
-  /**
-   * 构建查询参数代码
-   */
   private buildQueryParamsCode(queryParams: ExampleOpenAPIParameter[]): string {
-    if (queryParams.length === 0) {
+    if (this.hasAllowReservedQueryParameters(queryParams)) {
+      return `urlString += (urlString.contains("?") ? "&" : "?") + "${this.escapeSwiftString(
+        this.buildSerializedQueryString(queryParams)
+      )}"`;
+    }
+
+    const paramEntries = this.buildQueryParameterEntries(queryParams);
+
+    if (paramEntries.length === 0) {
       return '';
     }
-    
-    const paramEntries = queryParams.map(param => 
-      `urlString += (urlString.contains("?") ? "&" : "?") + "${param.name}=" + "${param.value}".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!`
-    );
-    
-    return paramEntries.join('\n    ');
+
+    return paramEntries
+      .map(
+        (param) =>
+          `urlString += (urlString.contains("?") ? "&" : "?") + "${this.escapeSwiftString(
+            param.name
+          )}=" + "${this.escapeSwiftString(
+            String(param.value)
+          )}".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&=?+")))!`
+      )
+      .join('\n    ');
   }
 
-  /**
-   * 构建请求头代码
-   */
-  private buildHeadersCode(headers: ExampleOpenAPIParameter[], requestVar: string): string {
-    if (headers.length === 0) {
-      return `${requestVar}.setValue("application/json", forHTTPHeaderField: "Content-Type")`;
-    }
-    
-    const headerEntries = headers.map(header => 
-      `${requestVar}.setValue("${header.value}", forHTTPHeaderField: "${header.name}")`
-    );
-    
-    return headerEntries.join('\n    ');
-  }
-
-  /**
-   * 构建请求体代码
-   */
-  private buildRequestBodyCode(method: HttpMethod, requestBody: any, requestVar: string): string {
-    if (!['POST', 'PUT', 'PATCH'].includes(method) || !requestBody) {
+  private buildRequestBodyCode(
+    method: HttpMethod,
+    requestBody: any,
+    requestVar: string,
+    context: CodeGenerateContext
+  ): string {
+    if (!this.hasRequestBody(method, requestBody)) {
       return '';
     }
-    
-    return `let requestData = try? JSONSerialization.data(withJSONObject: ${JSON.stringify(requestBody, null, 8)})\n    ${requestVar}.httpBody = requestData`;
+
+    if (this.isMultipartRequestBody(context)) {
+      const rawBody = this.buildRawMultipartBody(
+        this.getMultipartParts(requestBody)
+      );
+
+      return `let boundary = "${this.buildMultipartBoundary()}"
+    ${requestVar}.setValue("multipart/form-data; boundary=\\(boundary)", forHTTPHeaderField: "Content-Type")
+    let requestData = """
+${rawBody.replace(
+  new RegExp(this.buildMultipartBoundary(), 'g'),
+  '\\(boundary)'
+)}
+""".data(using: .utf8)
+    ${requestVar}.httpBody = requestData`;
+    }
+
+    if (this.isBinaryRequestBody(context)) {
+      return `let requestBody = try! Data(contentsOf: URL(fileURLWithPath: "${this.escapeSwiftString(
+        this.getBinaryRequestBodyFileName(requestBody)
+      )}"))
+    ${requestVar}.httpBody = requestBody`;
+    }
+
+    if (this.usesStringRequestBody(context)) {
+      return `${requestVar}.httpBody = "${this.escapeSwiftString(
+        this.serializeStringRequestBody(requestBody, context)
+      )}".data(using: .utf8)`;
+    }
+
+    return `let requestData = "${this.escapeSwiftString(
+      JSON.stringify(requestBody, null, 2)
+    )}".data(using: .utf8)
+    ${requestVar}.httpBody = requestData`;
+  }
+
+  private hasRequestBody(method: HttpMethod, requestBody: any): boolean {
+    return (
+      ['POST', 'PUT', 'PATCH'].includes(method) &&
+      requestBody !== undefined &&
+      requestBody !== null
+    );
+  }
+
+  private escapeSwiftString(value: string): string {
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\r?\n/g, '\\n');
   }
 }

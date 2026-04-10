@@ -1,40 +1,21 @@
 import { BaseRequestCodeGenerator } from '@/openapi/generator/generator';
-import { Language, HttpMethod, OpenAPIOperation, ExampleOpenAPIParameter, CodeGenerateContext } from '@/types';
+import {
+  CodeGenerateContext,
+  ExampleOpenAPIParameter,
+  HttpMethod,
+  Language,
+  OpenAPIOperation,
+} from '@/types';
 
-/**
- * Python httpx HTTP请求代码生成器
- */
 export class HttpxPythonRequestCodeGenerator extends BaseRequestCodeGenerator {
-  
-  /**
-   * 获取目标编程语言
-   * @returns 编程语言标识符
-   */
   getLanguage(): Language {
     return 'python';
   }
 
-  /**
-   * 获取使用的HTTP库名称
-   * @returns HTTP库名称
-   */
   getLibrary(): string {
     return 'httpx';
   }
 
-  /**
-   * 生成具体的HTTP请求代码
-   * @param path - 完整的请求Path
-   * @param method - 请求方法
-   * @param baseUrl - baseUrl
-   * @param operation - OpenAPI操作定义
-   * @param cookies - cookies示例数据
-   * @param headers - 请求头示例数据
-   * @param queryParams - 查询参数示例数据
-   * @param requestBody - 请求体示例数据
-   * @param context - 代码生成上下文
-   * @returns 生成的代码字符串
-   */
   generateCode(
     path: string,
     method: HttpMethod,
@@ -46,124 +27,349 @@ export class HttpxPythonRequestCodeGenerator extends BaseRequestCodeGenerator {
     requestBody: any,
     context: CodeGenerateContext
   ): string {
-    const operationId = operation.operationId || 'api_request';
-    const url = `${baseUrl}${path}`;
-    
+    if (this.isMultipartRequestBody(context)) {
+      return this.generateMultipartRequestCode(
+        path,
+        baseUrl,
+        method,
+        operation,
+        cookies,
+        headers,
+        queryParams,
+        requestBody,
+        context
+      );
+    }
+
+    const operationId = this.toIdentifier(
+      operation.operationId,
+      'api_request',
+      'snake'
+    );
+    const url = this.escapeDoubleQuotedString(
+      this.buildRequestUrl(baseUrl, path)
+    );
+    const successStatusCheckCode = this.buildSuccessStatusCheckCode(context);
+    const requestHeaders = this.buildHeaders(
+      headers,
+      cookies,
+      method,
+      requestBody,
+      context
+    );
+    const binaryBodySetup = this.buildBinaryBodySetup(
+      method,
+      requestBody,
+      context
+    );
+    const queryEncodingImport =
+      queryParams.length > 0 &&
+      !this.hasAllowReservedQueryParameters(queryParams)
+        ? 'from urllib.parse import quote\n'
+        : '';
+
     return `import httpx
 import json
+${queryEncodingImport}
 
 """
-${operation.summary || operation.description || 'API请求'}
-${operation.description ? ` * ${operation.description}` : ''}
+${operation.summary || operation.description || 'API request'}
+${operation.description || ''}
 """
 
 async def ${operationId}():
     url = "${url}"
     ${this.buildQueryParamsCode(queryParams)}
-    
+
     headers = {
-        ${this.buildHeadersCode(headers)}
+        ${this.buildHeadersCode(requestHeaders)}
     }
-    
-    ${this.buildCookiesCode(cookies)}
-    ${this.buildRequestBodyCode(method, requestBody)}
-    
+
+    ${binaryBodySetup}
+    ${this.buildRequestBodyCode(method, requestBody, context)}
+
     async with httpx.AsyncClient() as client:
         response = await client.${method.toLowerCase()}(
             url,
             headers=headers,
-            ${this.buildCookiesParamCode(cookies)}
-            ${this.buildRequestDataCode(method, requestBody)}
+            ${this.buildRequestDataCode(method, requestBody, context)}
         )
-        
-        if response.status_code != 200:
-            raise Exception(f"HTTP error! status: {response.status_code}")
-        
-        data = response.json()
-        print('Response:', data)
-        return data
 
-# 调用示例
+${successStatusCheckCode}
+
+${this.buildResponseHandlingCode(context)}
+
 if __name__ == "__main__":
     import asyncio
     asyncio.run(${operationId}())`;
   }
 
-  /**
-   * 构建cookies代码
-   */
-  private buildCookiesCode(cookies: ExampleOpenAPIParameter[]): string {
-    if (cookies.length === 0) {
-      return '';
-    }
-    
-    const cookieEntries = cookies.map(cookie => 
-      `'${cookie.name}': '${cookie.value}'`
+  private generateMultipartRequestCode(
+    path: string,
+    baseUrl: string,
+    method: HttpMethod,
+    operation: OpenAPIOperation,
+    cookies: ExampleOpenAPIParameter[],
+    headers: ExampleOpenAPIParameter[],
+    queryParams: ExampleOpenAPIParameter[],
+    requestBody: any,
+    context: CodeGenerateContext
+  ): string {
+    const operationId = this.toIdentifier(
+      operation.operationId,
+      'api_request',
+      'snake'
     );
-    
-    return `cookies = {\n    ${cookieEntries.join(',\n    ')}\n}`;
-  }
+    const url = this.escapeDoubleQuotedString(
+      this.buildRequestUrl(baseUrl, path)
+    );
+    const successStatusCheckCode = this.buildSuccessStatusCheckCode(context);
+    const fieldParts = this.getMultipartFieldParts(requestBody);
+    const fileParts = this.getMultipartFileParts(requestBody);
+    const requestHeaders = this.buildRequestHeaders(headers, cookies);
+    const queryEncodingImport =
+      queryParams.length > 0 &&
+      !this.hasAllowReservedQueryParameters(queryParams)
+        ? 'from urllib.parse import quote\n'
+        : '';
+    return `import httpx
+${queryEncodingImport}
 
-  /**
-   * 构建cookies参数代码
-   */
-  private buildCookiesParamCode(cookies: ExampleOpenAPIParameter[]): string {
-    if (cookies.length === 0) {
-      return '';
+"""
+${operation.summary || operation.description || 'API request'}
+${operation.description || ''}
+"""
+
+async def ${operationId}():
+    url = "${url}"
+    ${this.buildQueryParamsCode(queryParams)}
+
+    headers = {
+        ${this.buildHeadersCode(requestHeaders)}
     }
-    
-    return 'cookies=cookies,';
+
+    data = {${fieldParts
+      .map(
+        (part) =>
+          `'${this.escapeSingleQuoted(part.name)}': '${this.escapeSingleQuoted(
+            String(part.value)
+          )}'`
+      )
+      .join(', ')}}
+    files = {${fileParts
+      .map(
+        (part) =>
+          `'${this.escapeSingleQuoted(part.name)}': ('${this.escapeSingleQuoted(
+            part.filename || part.name
+          )}', open('${this.escapeSingleQuoted(
+            part.filename || part.name
+          )}', 'rb'), '${this.escapeSingleQuoted(
+            part.contentType || 'application/octet-stream'
+          )}')`
+      )
+      .join(', ')}}
+
+    async with httpx.AsyncClient() as client:
+        response = await client.${method.toLowerCase()}(
+            url,
+            headers=headers,
+            data=data,
+            files=files
+        )
+
+${successStatusCheckCode}
+
+${this.buildResponseHandlingCode(context)}
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(${operationId}())`;
   }
 
-  /**
-   * 构建查询参数代码
-   */
+  private buildHeaders(
+    headers: ExampleOpenAPIParameter[],
+    cookies: ExampleOpenAPIParameter[],
+    method: HttpMethod,
+    requestBody: any,
+    context: CodeGenerateContext
+  ): ExampleOpenAPIParameter[] {
+    const requestHeaders = this.buildRequestHeaders(headers, cookies);
+
+    if (
+      this.hasRequestBody(method, requestBody) &&
+      this.shouldAutoAddContentTypeHeader(context) &&
+      !requestHeaders.some(
+        (header) => header.name.toLowerCase() === 'content-type'
+      )
+    ) {
+      requestHeaders.push({
+        name: 'Content-Type',
+        in: 'header',
+        required: false,
+        schema: { type: 'string' },
+        value: context.requestContentType,
+      });
+    }
+
+    return requestHeaders;
+  }
+
   private buildQueryParamsCode(queryParams: ExampleOpenAPIParameter[]): string {
-    if (queryParams.length === 0) {
+    if (this.hasAllowReservedQueryParameters(queryParams)) {
+      return `url += ('?' if '?' not in url else '&') + '${this.escapeSingleQuoted(
+        this.buildSerializedQueryString(queryParams)
+      )}'`;
+    }
+
+    const paramEntries = this.buildQueryParameterEntries(queryParams);
+
+    if (paramEntries.length === 0) {
       return '';
     }
-    
-    const paramEntries = queryParams.map(param => 
-      `url += (url + '?' if '?' not in url else '&') + '${param.name}=' + '${param.value}'`
-    );
-    
-    return paramEntries.join('\n    ');
+
+    return paramEntries
+      .map(
+        (param) =>
+          `url += ('?' if '?' not in url else '&') + '${this.escapeSingleQuoted(
+            param.name
+          )}=' + quote('${this.escapeSingleQuoted(param.value)}', safe='')`
+      )
+      .join('\n    ');
   }
 
-  /**
-   * 构建请求头代码
-   */
   private buildHeadersCode(headers: ExampleOpenAPIParameter[]): string {
     if (headers.length === 0) {
-      return `'Content-Type': 'application/json'`;
-    }
-    
-    const headerEntries = headers.map(header => 
-      `'${header.name}': '${header.value}'`
-    );
-    
-    return headerEntries.join(',\n        ');
-  }
-
-  /**
-   * 构建请求体代码
-   */
-  private buildRequestBodyCode(method: HttpMethod, requestBody: any): string {
-    if (!['POST', 'PUT', 'PATCH'].includes(method) || !requestBody) {
       return '';
     }
-    
-    return `data = ${JSON.stringify(requestBody, null, 8)}`;
+
+    return headers
+      .map(
+        (header) =>
+          `'${this.escapeSingleQuoted(
+            header.name
+          )}': '${this.escapeSingleQuoted(
+            this.serializeHeaderParameterValue(header)
+          )}'`
+      )
+      .join(',\n        ');
   }
 
-  /**
-   * 构建请求数据代码
-   */
-  private buildRequestDataCode(method: HttpMethod, requestBody: any): string {
-    if (!['POST', 'PUT', 'PATCH'].includes(method) || !requestBody) {
+  private buildRequestBodyCode(
+    method: HttpMethod,
+    requestBody: any,
+    context: CodeGenerateContext
+  ): string {
+    if (!this.hasRequestBody(method, requestBody)) {
       return '';
     }
-    
+
+    if (this.isBinaryRequestBody(context)) {
+      return '';
+    }
+
+    if (this.usesStringRequestBody(context)) {
+      return `data = '${this.escapeSingleQuoted(
+        this.serializeStringRequestBody(requestBody, context)
+      )}'`;
+    }
+
+    return `data = ${this.toPythonLiteral(requestBody, 4)}`;
+  }
+
+  private buildRequestDataCode(
+    method: HttpMethod,
+    requestBody: any,
+    context: CodeGenerateContext
+  ): string {
+    if (!this.hasRequestBody(method, requestBody)) {
+      return '';
+    }
+
+    if (this.isBinaryRequestBody(context)) {
+      return 'content=data';
+    }
+
+    if (this.usesStringRequestBody(context)) {
+      return 'content=data';
+    }
+
     return 'json=data';
+  }
+
+  private buildRequestHeaders(
+    headers: ExampleOpenAPIParameter[],
+    cookies: ExampleOpenAPIParameter[]
+  ): ExampleOpenAPIParameter[] {
+    const requestHeaders = [...headers];
+    const cookieHeader = this.buildCookieHeaderParameter(cookies);
+
+    if (cookieHeader) {
+      requestHeaders.push(cookieHeader);
+    }
+
+    return requestHeaders;
+  }
+
+  private hasRequestBody(method: HttpMethod, requestBody: any): boolean {
+    return (
+      ['POST', 'PUT', 'PATCH'].includes(method) &&
+      requestBody !== undefined &&
+      requestBody !== null
+    );
+  }
+
+  private escapeSingleQuoted(value: string): string {
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/'/g, "\\'")
+      .replace(/\r?\n/g, '\\n');
+  }
+
+  private buildBinaryBodySetup(
+    method: HttpMethod,
+    requestBody: any,
+    context: CodeGenerateContext
+  ): string {
+    if (
+      !this.hasRequestBody(method, requestBody) ||
+      !this.isBinaryRequestBody(context)
+    ) {
+      return '';
+    }
+
+    return `with open('${this.escapeSingleQuoted(
+      this.getBinaryRequestBodyFileName(requestBody)
+    )}', 'rb') as requestBody:
+        data = requestBody.read()`;
+  }
+
+  private buildResponseHandlingCode(context: CodeGenerateContext): string {
+    if (this.isBinaryResponse(context)) {
+      return `        data = response.content
+        print('Response bytes:', len(data))
+        return data`;
+    }
+
+    if (this.usesStringResponse(context)) {
+      return `        data = response.text
+        print('Response:', data)
+        return data`;
+    }
+
+    return `        data = response.json()
+        print('Response:', data)
+        return data`;
+  }
+
+  private buildSuccessStatusCheckCode(context: CodeGenerateContext): string {
+    if (this.usesAny2xxSuccessStatus(context)) {
+      return `        if response.status_code < 200 or response.status_code >= 300:
+            raise Exception(f"HTTP error! status: {response.status_code}")`;
+    }
+
+    return `        if response.status_code != ${this.getExpectedSuccessStatusCode(
+      context
+    )}:
+            raise Exception(f"HTTP error! status: {response.status_code}")`;
   }
 }

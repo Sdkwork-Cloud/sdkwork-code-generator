@@ -1,40 +1,21 @@
 import { BaseRequestCodeGenerator } from '@/openapi/generator/generator';
-import { Language, HttpMethod, OpenAPIOperation, ExampleOpenAPIParameter, CodeGenerateContext } from '@/types';
+import {
+  CodeGenerateContext,
+  ExampleOpenAPIParameter,
+  HttpMethod,
+  Language,
+  OpenAPIOperation,
+} from '@/types';
 
-/**
- * Java Unirest HTTP请求代码生成器
- */
 export class UnirestJavaRequestCodeGenerator extends BaseRequestCodeGenerator {
-  
-  /**
-   * 获取目标编程语言
-   * @returns 编程语言标识符
-   */
   getLanguage(): Language {
     return 'java';
   }
 
-  /**
-   * 获取使用的HTTP库名称
-   * @returns HTTP库名称
-   */
   getLibrary(): string {
     return 'unirest';
   }
 
-  /**
-   * 生成具体的HTTP请求代码
-   * @param path - 完整的请求Path
-   * @param method - 请求方法
-   * @param baseUrl - baseUrl
-   * @param operation - OpenAPI操作定义
-   * @param cookies - cookies示例数据
-   * @param headers - 请求头示例数据
-   * @param queryParams - 查询参数示例数据
-   * @param requestBody - 请求体示例数据
-   * @param context - 代码生成上下文
-   * @returns 生成的代码字符串
-   */
   generateCode(
     path: string,
     method: HttpMethod,
@@ -46,112 +27,255 @@ export class UnirestJavaRequestCodeGenerator extends BaseRequestCodeGenerator {
     requestBody: any,
     context: CodeGenerateContext
   ): string {
-    const operationId = operation.operationId || 'apiRequest';
-    const className = this.toPascalCase(operationId);
-    const url = `${baseUrl}${path}`;
-    
+    const className = this.toIdentifier(
+      operation.operationId,
+      'ApiRequest',
+      'pascal'
+    );
+    const methodName = this.toIdentifier(
+      operation.operationId,
+      'apiRequest',
+      'camel'
+    );
+    const url = this.escapeDoubleQuotedString(
+      this.buildRequestUrl(baseUrl, path)
+    );
+    const handlesBinaryResponse = this.isBinaryResponse(context);
+    const responseType = handlesBinaryResponse
+      ? 'byte[]'
+      : this.usesStringResponse(context)
+      ? 'String'
+      : 'JsonNode';
+    const responseExecution = handlesBinaryResponse
+      ? '.asBytes();'
+      : this.usesStringResponse(context)
+      ? '.asString();'
+      : '.asJson();';
+    const successStatusCode = this.getExpectedSuccessStatusCode(context);
+    const successStatusCheck = this.usesAny2xxSuccessStatus(context)
+      ? 'response.getStatus() < 200 || response.getStatus() >= 300'
+      : `response.getStatus() != ${successStatusCode}`;
+    const responseHandlingCode = handlesBinaryResponse
+      ? `byte[] data = response.getBody();
+        System.out.println("Response bytes: " + data.length);`
+      : this.usesStringResponse(context)
+      ? `String data = response.getBody();
+        System.out.println("Response: " + data);`
+      : `JSONObject data = response.getBody().getObject();
+        System.out.println("Response: " + data);`;
+    const usesSerializedQueryString =
+      this.hasAllowReservedQueryParameters(queryParams);
+    const queryParamsSetup = usesSerializedQueryString
+      ? `String url = "${url}";
+        ${this.buildSerializedQueryStringSetup(queryParams)}`
+      : '';
+    const requestTarget = usesSerializedQueryString ? 'url' : `"${url}"`;
+
     return `import kong.unirest.HttpResponse;
 import kong.unirest.JsonNode;
 import kong.unirest.Unirest;
 import kong.unirest.json.JSONObject;
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 
 /**
- * ${operation.summary || operation.description || 'API请求'}
+ * ${operation.summary || operation.description || 'API request'}
  * ${operation.description ? ` * ${operation.description}` : ''}
  */
 public class ${className} {
-    
+
     public static void main(String[] args) {
         try {
-            ${operationId}();
+            ${methodName}();
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
-    
-    public static void ${operationId}() throws Exception {
-        String url = "${url}";
-        
-        HttpResponse<JsonNode> response = Unirest.${method.toLowerCase()}("${url}")
+
+    public static void ${methodName}() throws Exception {
+        ${this.buildBinaryRequestBodySetup(method, requestBody, context)}
+        ${queryParamsSetup}
+        HttpResponse<${responseType}> response = Unirest.${method.toLowerCase()}(${requestTarget})
             ${this.buildCookiesCode(cookies)}
             ${this.buildQueryParamsCode(queryParams)}
-            ${this.buildHeadersCode(headers)}
-            ${this.buildRequestBodyCode(method, requestBody)}
-            .asJson();
-        
-        if (response.getStatus() != 200) {
+            ${this.buildHeadersCode(headers, method, requestBody, context)}
+            ${this.buildRequestBodyCode(method, requestBody, context)}
+            ${responseExecution}
+
+        if (${successStatusCheck}) {
             throw new RuntimeException("HTTP error! status: " + response.getStatus());
         }
-        
-        JSONObject data = response.getBody().getObject();
-        System.out.println("Response: " + data);
+
+        ${responseHandlingCode}
     }
 }`;
   }
 
-  /**
-   * 构建cookies代码
-   */
   private buildCookiesCode(cookies: ExampleOpenAPIParameter[]): string {
     if (cookies.length === 0) {
       return '';
     }
-    
-    const cookieEntries = cookies.map(cookie => 
-      `"${cookie.name}=${cookie.value}"`
-    );
-    
-    return `.header("Cookie", "${cookieEntries.join('; ')}")`;
+
+    return `.header("Cookie", "${this.escapeDoubleQuoted(
+      this.buildCookieHeaderValue(cookies)
+    )}")`;
   }
 
-  /**
-   * 构建查询参数代码
-   */
   private buildQueryParamsCode(queryParams: ExampleOpenAPIParameter[]): string {
-    if (queryParams.length === 0) {
+    if (this.hasAllowReservedQueryParameters(queryParams)) {
       return '';
     }
-    
-    const paramEntries = queryParams.map(param => 
-      `.queryString("${param.name}", "${param.value}")`
-    );
-    
-    return paramEntries.join('\n            ');
-  }
 
-  /**
-   * 构建请求头代码
-   */
-  private buildHeadersCode(headers: ExampleOpenAPIParameter[]): string {
-    if (headers.length === 0) {
-      return `.header("Content-Type", "application/json")`;
-    }
-    
-    const headerEntries = headers.map(header => 
-      `.header("${header.name}", "${header.value}")`
-    );
-    
-    return headerEntries.join('\n            ');
-  }
+    const paramEntries = this.buildQueryParameterEntries(queryParams);
 
-  /**
-   * 构建请求体代码
-   */
-  private buildRequestBodyCode(method: HttpMethod, requestBody: any): string {
-    if (!['POST', 'PUT', 'PATCH'].includes(method) || !requestBody) {
+    if (paramEntries.length === 0) {
       return '';
     }
-    
-    return `.body(${JSON.stringify(requestBody, null, 12)})`;
+
+    return paramEntries
+      .map(
+        (param) =>
+          `.queryString("${this.escapeDoubleQuoted(
+            param.name
+          )}", "${this.escapeDoubleQuoted(String(param.value))}")`
+      )
+      .join('\n            ');
   }
 
-  /**
-   * 转换为帕斯卡命名
-   */
+  private buildSerializedQueryStringSetup(
+    queryParams: ExampleOpenAPIParameter[]
+  ): string {
+    return `url += (url.contains("?") ? "&" : "?") + "${this.escapeDoubleQuoted(
+      this.buildSerializedQueryString(queryParams)
+    )}";`;
+  }
+
+  private buildHeadersCode(
+    headers: ExampleOpenAPIParameter[],
+    method: HttpMethod,
+    requestBody: any,
+    context: CodeGenerateContext
+  ): string {
+    const requestHeaders = [...headers];
+
+    if (
+      this.hasRequestBody(method, requestBody) &&
+      this.shouldAutoAddContentTypeHeader(context) &&
+      !requestHeaders.some(
+        (header) => header.name.toLowerCase() === 'content-type'
+      )
+    ) {
+      requestHeaders.push({
+        name: 'Content-Type',
+        in: 'header',
+        required: false,
+        schema: { type: 'string' },
+        value: context.requestContentType,
+      });
+    }
+
+    if (requestHeaders.length === 0) {
+      return '';
+    }
+
+    return requestHeaders
+      .map(
+        (header) =>
+          `.header("${header.name}", "${this.escapeDoubleQuoted(
+            this.serializeHeaderParameterValue(header)
+          )}")`
+      )
+      .join('\n            ');
+  }
+
+  private buildRequestBodyCode(
+    method: HttpMethod,
+    requestBody: any,
+    context: CodeGenerateContext
+  ): string {
+    if (!this.hasRequestBody(method, requestBody)) {
+      return '';
+    }
+
+    if (this.isMultipartRequestBody(context)) {
+      return this.buildMultipartRequestBodyCode(requestBody);
+    }
+
+    if (this.isBinaryRequestBody(context)) {
+      return '.body(requestBody)';
+    }
+
+    if (this.usesStringRequestBody(context)) {
+      return `.body("${this.escapeDoubleQuoted(
+        this.serializeStringRequestBody(requestBody, context)
+      )}")`;
+    }
+
+    return `.body("${this.escapeDoubleQuoted(
+      JSON.stringify(requestBody, null, 2)
+    )}")`;
+  }
+
+  private buildMultipartRequestBodyCode(requestBody: any): string {
+    const fieldLines = this.getMultipartFieldParts(requestBody).map(
+      (part) =>
+        `.field("${this.escapeDoubleQuoted(
+          part.name
+        )}", "${this.escapeDoubleQuoted(part.value)}")`
+    );
+    const filePart = this.getMultipartFileParts(requestBody)[0];
+    const fileLines = filePart
+      ? [
+          `.field("${this.escapeDoubleQuoted(
+            filePart.name
+          )}", new File("${this.escapeDoubleQuoted(
+            filePart.filename || filePart.name
+          )}"), "${this.escapeDoubleQuoted(
+            filePart.contentType || 'application/octet-stream'
+          )}")`,
+        ]
+      : [];
+
+    return [...fieldLines, ...fileLines].join('\n            ');
+  }
+
+  private buildBinaryRequestBodySetup(
+    method: HttpMethod,
+    requestBody: any,
+    context: CodeGenerateContext
+  ): string {
+    if (
+      !this.hasRequestBody(method, requestBody) ||
+      !this.isBinaryRequestBody(context)
+    ) {
+      return '';
+    }
+
+    return `byte[] requestBody = Files.readAllBytes(Paths.get("${this.escapeDoubleQuoted(
+      this.getBinaryRequestBodyFileName(requestBody)
+    )}"));`;
+  }
+
   private toPascalCase(str: string): string {
     const words = str.split(/[_\-\s]/);
-    return words.map(word => 
-      word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
-    ).join('');
+    return words
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .join('');
+  }
+
+  private hasRequestBody(method: HttpMethod, requestBody: any): boolean {
+    return (
+      ['POST', 'PUT', 'PATCH'].includes(method) &&
+      requestBody !== undefined &&
+      requestBody !== null
+    );
+  }
+
+  private escapeDoubleQuoted(value: string): string {
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\r?\n/g, '\\n');
   }
 }

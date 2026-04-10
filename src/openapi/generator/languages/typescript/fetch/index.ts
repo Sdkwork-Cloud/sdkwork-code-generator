@@ -1,40 +1,21 @@
 import { BaseRequestCodeGenerator } from '@/openapi/generator/generator';
-import { Language, HttpMethod, OpenAPIOperation, ExampleOpenAPIParameter, CodeGenerateContext } from '@/types';
+import {
+  CodeGenerateContext,
+  ExampleOpenAPIParameter,
+  HttpMethod,
+  Language,
+  OpenAPIOperation,
+} from '@/types';
 
-/**
- * TypeScript Fetch API HTTP请求代码生成器
- */
 export class FetchTypeScriptRequestCodeGenerator extends BaseRequestCodeGenerator {
-  
-  /**
-   * 获取目标编程语言
-   * @returns 编程语言标识符
-   */
   getLanguage(): Language {
     return 'typescript';
   }
 
-  /**
-   * 获取使用的HTTP库名称
-   * @returns HTTP库名称
-   */
   getLibrary(): string {
     return 'fetch';
   }
 
-  /**
-   * 生成具体的HTTP请求代码
-   * @param path - 完整的请求Path
-   * @param method - 请求方法
-   * @param baseUrl - baseUrl
-   * @param operation - OpenAPI操作定义
-   * @param pathVariables - 路径参数示例数据
-   * @param headers - 请求头示例数据
-   * @param queryParams - 查询参数示例数据
-   * @param requestBody - 请求体示例数据
-   * @param context - 代码生成上下文
-   * @returns 生成的代码字符串
-   */
   generateCode(
     path: string,
     method: HttpMethod,
@@ -46,14 +27,55 @@ export class FetchTypeScriptRequestCodeGenerator extends BaseRequestCodeGenerato
     requestBody: any,
     context: CodeGenerateContext
   ): string {
-    const operationId = operation.operationId || 'apiRequest';
-    const url = `${baseUrl}${path}`;
-    
-    // 构建接口定义
-    const interfaceName = this.toPascalCase(operationId);
-    
-    return `/**
- * ${operation.summary || operation.description || 'API请求'}
+    const operationId = this.toIdentifier(
+      operation.operationId,
+      'apiRequest',
+      'camel'
+    );
+    const interfaceName = this.toIdentifier(
+      operation.operationId,
+      'ApiRequest',
+      'pascal'
+    );
+    const url = this.escapeDoubleQuotedString(
+      this.buildRequestUrl(baseUrl, path)
+    );
+    const binarySetup = this.isBinaryRequestBody(context)
+      ? `    const requestBody = await readFile('${this.escapeSingleQuoted(
+          this.getBinaryRequestBodyFileName(requestBody)
+        )}');\n\n`
+      : '';
+    const multipartSetup =
+      this.isMultipartRequestBody(context) && requestBody
+        ? `    ${this.buildMultipartFormDataSetup(requestBody)}\n\n`
+        : '';
+    const config = this.buildFetchConfig(
+      method,
+      cookies,
+      headers,
+      requestBody,
+      context
+    );
+    const expectedSuccessStatusCode =
+      this.getExpectedSuccessStatusCode(context);
+    const successStatusCheck = this.usesAny2xxSuccessStatus(context)
+      ? 'response.status < 200 || response.status >= 300'
+      : `response.status !== ${expectedSuccessStatusCode}`;
+    const responseDataExpression = this.isBinaryResponse(context)
+      ? 'await response.arrayBuffer()'
+      : this.usesStringResponse(context)
+      ? 'await response.text()'
+      : 'await response.json()';
+    const responseLoggingCode = this.isBinaryResponse(context)
+      ? "console.log('Response bytes:', data.byteLength);"
+      : "console.log('Response:', data);";
+
+    const binaryImport = this.isBinaryRequestBody(context)
+      ? `import { readFile } from 'fs/promises';\n\n`
+      : '';
+
+    return `${binaryImport}/**
+ * ${operation.summary || operation.description || 'API request'}
  * ${operation.description ? ` * ${operation.description}` : ''}
  */
 
@@ -66,26 +88,20 @@ interface ${interfaceName}Response {
     status: number;
 }
 
-/**
- * ${operation.summary || 'API请求函数'}
- */
 async function ${operationId}(): Promise<${interfaceName}Response> {
-    const url = "${url}";
+    let url = "${url}";
     ${this.buildQueryParamsCode(queryParams)}
-    
+${binarySetup}${multipartSetup}
+
     try {
-        const response = await fetch(url, {
-            method: '${method}',
-            ${this.buildHeadersCode(headers)}
-            ${['POST', 'PUT', 'PATCH'].includes(method) && requestBody ? `body: JSON.stringify(${JSON.stringify(requestBody, null, 2)})` : ''}
-        });
-        
-        if (!response.ok) {
+        const response = await fetch(url, ${config});
+
+        if (${successStatusCheck}) {
             throw new Error(\`HTTP error! status: \${response.status}\`);
         }
-        
-        const data = await response.json();
-        console.log('Response:', data);
+
+        const data = ${responseDataExpression};
+        ${responseLoggingCode}
         return {
             data,
             status: response.status
@@ -96,61 +112,151 @@ async function ${operationId}(): Promise<${interfaceName}Response> {
     }
 }
 
-// 调用示例
+// Example usage
 ${operationId}();`;
   }
 
-  /**
-   * 构建请求接口定义
-   */
+  private buildFetchConfig(
+    method: HttpMethod,
+    cookies: ExampleOpenAPIParameter[],
+    headers: ExampleOpenAPIParameter[],
+    requestBody: any,
+    context: CodeGenerateContext
+  ): string {
+    const configParts: string[] = [`method: '${method}'`];
+    const requestHeaders = [...headers];
+
+    if (cookies.length > 0) {
+      configParts.push(`credentials: 'include'`);
+    }
+
+    if (
+      this.hasRequestBody(method, requestBody) &&
+      this.shouldAutoAddContentTypeHeader(context) &&
+      !requestHeaders.some(
+        (header) => header.name.toLowerCase() === 'content-type'
+      )
+    ) {
+      requestHeaders.push({
+        name: 'Content-Type',
+        in: 'header',
+        required: false,
+        schema: { type: 'string' },
+        value: context.requestContentType,
+      });
+    }
+
+    if (requestHeaders.length > 0) {
+      configParts.push(`headers: ${this.buildHeadersObject(requestHeaders)}`);
+    }
+
+    if (this.hasRequestBody(method, requestBody)) {
+      if (this.isMultipartRequestBody(context)) {
+        configParts.push('body: formData');
+      } else if (this.isBinaryRequestBody(context)) {
+        configParts.push('body: requestBody');
+      } else if (this.usesStringRequestBody(context)) {
+        configParts.push(
+          `body: '${this.escapeSingleQuoted(
+            this.serializeStringRequestBody(requestBody, context)
+          )}'`
+        );
+      } else {
+        configParts.push(
+          `body: JSON.stringify(${JSON.stringify(requestBody, null, 2)})`
+        );
+      }
+    }
+
+    return `{\n            ${configParts.join(',\n            ')}\n        }`;
+  }
+
   private buildRequestInterface(requestBody: any): string {
     if (!requestBody || typeof requestBody !== 'object') {
-      return '// 请求参数定义';
+      return '// Request parameter definition';
     }
-    
-    const properties = Object.keys(requestBody).map(key => {
-      const value = requestBody[key];
-      return `${key}: ${this.getTypeScriptType(value)};`;
-    });
-    
-    return properties.join('\n    ');
+
+    if (this.isMultipartPartsRequestBody(requestBody)) {
+      const seen = new Set<string>();
+      return this.getMultipartParts(requestBody)
+        .filter((part) => {
+          if (seen.has(part.name)) {
+            return false;
+          }
+
+          seen.add(part.name);
+          return true;
+        })
+        .map((part) => `${this.toTypeScriptPropertyKey(part.name)}: string;`)
+        .join('\n    ');
+    }
+
+    return Object.keys(requestBody)
+      .map(
+        (key) =>
+          `${this.toTypeScriptPropertyKey(key)}: ${this.getTypeScriptType(
+            requestBody[key]
+          )};`
+      )
+      .join('\n    ');
   }
 
-  /**
-   * 构建请求头代码
-   */
-  private buildHeadersCode(headers: ExampleOpenAPIParameter[]): string {
-    if (headers.length === 0) {
-      return '';
-    }
-    
-    const headerEntries = headers.map(header => 
-      `'${header.name}': '${header.value}'`
+  private buildHeadersObject(headers: ExampleOpenAPIParameter[]): string {
+    const headerEntries = headers.map(
+      (header) =>
+        `'${this.escapeSingleQuoted(header.name)}': '${this.escapeSingleQuoted(
+          this.serializeHeaderParameterValue(header)
+        )}'`
     );
-    
-    return `headers: {
-                ${headerEntries.join(',\n                ')}
-            },`;
+
+    return `{\n                ${headerEntries.join(
+      ',\n                '
+    )}\n            }`;
   }
 
-  /**
-   * 构建查询参数代码
-   */
   private buildQueryParamsCode(queryParams: ExampleOpenAPIParameter[]): string {
-    if (queryParams.length === 0) {
+    if (this.hasAllowReservedQueryParameters(queryParams)) {
+      return `const queryString = '${this.escapeSingleQuoted(
+        this.buildSerializedQueryString(queryParams)
+      )}';\n    if (queryString) {\n        url += (url.includes('?') ? '&' : '?') + queryString;\n    }`;
+    }
+
+    const paramEntries = this.buildQueryParameterEntries(queryParams);
+
+    if (paramEntries.length === 0) {
       return '';
     }
-    
-    const paramEntries = queryParams.map(param => 
-      `url += (url.includes('?') ? '&' : '?') + '${param.name}=' + encodeURIComponent('${param.value}');`
+
+    const paramLines = paramEntries.map(
+      (param) =>
+        `queryParams.append('${this.escapeSingleQuoted(
+          param.name
+        )}', '${this.escapeSingleQuoted(param.value)}');`
     );
-    
-    return paramEntries.join('\n    ');
+
+    return `const queryParams = new URLSearchParams();\n    ${paramLines.join(
+      '\n    '
+    )}\n    const queryString = queryParams.toString();\n    if (queryString) {\n        url += (url.includes('?') ? '&' : '?') + queryString;\n    }`;
   }
 
-  /**
-   * 获取TypeScript类型
-   */
+  private buildMultipartFormDataSetup(requestBody: any): string {
+    const multipartLines = this.getMultipartParts(requestBody).map((part) =>
+      part.kind === 'file'
+        ? `formData.append('${this.escapeSingleQuoted(
+            part.name
+          )}', new Blob(['${this.escapeSingleQuoted(
+            part.value
+          )}']), '${this.escapeSingleQuoted(part.filename || part.name)}');`
+        : `formData.append('${this.escapeSingleQuoted(
+            part.name
+          )}', '${this.escapeSingleQuoted(part.value)}');`
+    );
+
+    return `const formData = new FormData();\n    ${multipartLines.join(
+      '\n    '
+    )}`;
+  }
+
   private getTypeScriptType(value: any): string {
     if (typeof value === 'string') return 'string';
     if (typeof value === 'number') return 'number';
@@ -159,13 +265,18 @@ ${operationId}();`;
     return 'any';
   }
 
-  /**
-   * 转换为帕斯卡命名
-   */
-  private toPascalCase(str: string): string {
-    const words = str.split(/[_\-\s]/);
-    return words.map(word => 
-      word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
-    ).join('');
+  private hasRequestBody(method: HttpMethod, requestBody: any): boolean {
+    return (
+      ['POST', 'PUT', 'PATCH'].includes(method) &&
+      requestBody !== undefined &&
+      requestBody !== null
+    );
+  }
+
+  private escapeSingleQuoted(value: string): string {
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/'/g, "\\'")
+      .replace(/\r?\n/g, '\\n');
   }
 }

@@ -8,7 +8,7 @@ import {
   ChatCompletionResponse,
   ChatCompletionStreamResponse,
   ChatCompletionCreateOptions,
-  ChatCompletionProviderConfig
+  ChatCompletionProviderConfig,
 } from './chat-completions';
 
 /**
@@ -147,7 +147,10 @@ export interface Agent {
      * @param updates 更新内容
      * @returns 更新后的对话
      */
-    update(conversationId: string, updates: Partial<AgentConversation>): Promise<AgentConversation>;
+    update(
+      conversationId: string,
+      updates: Partial<AgentConversation>
+    ): Promise<AgentConversation>;
 
     /**
      * 删除对话
@@ -338,9 +341,17 @@ export interface AgentEvents {
   /** 请求开始 */
   'request:start': { request: ChatCompletionRequest };
   /** 请求成功 */
-  'request:success': { request: ChatCompletionRequest; response: ChatCompletionResponse; duration: number };
+  'request:success': {
+    request: ChatCompletionRequest;
+    response: ChatCompletionResponse;
+    duration: number;
+  };
   /** 请求失败 */
-  'request:error': { request: ChatCompletionRequest; error: AgentError; duration: number };
+  'request:error': {
+    request: ChatCompletionRequest;
+    error: AgentError;
+    duration: number;
+  };
   /** 对话创建 */
   'conversation:create': { conversation: AgentConversation };
   /** 对话更新 */
@@ -362,14 +373,20 @@ export interface AgentEventEmitter {
    * @param event 事件名称
    * @param listener 事件监听器
    */
-  on<T extends keyof AgentEvents>(event: T, listener: (data: AgentEvents[T]) => void): void;
+  on<T extends keyof AgentEvents>(
+    event: T,
+    listener: (data: AgentEvents[T]) => void
+  ): void;
 
   /**
    * 取消监听事件
    * @param event 事件名称
    * @param listener 事件监听器
    */
-  off<T extends keyof AgentEvents>(event: T, listener: (data: AgentEvents[T]) => void): void;
+  off<T extends keyof AgentEvents>(
+    event: T,
+    listener: (data: AgentEvents[T]) => void
+  ): void;
 
   /**
    * 触发事件
@@ -434,22 +451,22 @@ export interface AgentBatchResponse<T = any> {
 export interface CodeAgent extends Omit<Agent, 'chat'> {
   /** 简化的聊天方法（向后兼容） */
   chat(message: string): Promise<string>;
-  
+
   /** 完整的聊天完成接口 */
   chatCompletions: AgentChatCompletions;
-  
+
   /** 配置信息 */
   config: AgentConfig;
-  
+
   /** 对话管理 */
   conversations: Agent['conversations'];
-  
+
   /** 工具管理 */
   tools: Agent['tools'];
-  
+
   /** 模型管理 */
   models: Agent['models'];
-  
+
   /** 统计信息 */
   stats: Agent['stats'];
 }

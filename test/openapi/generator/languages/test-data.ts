@@ -298,5 +298,17 @@ export const LANGUAGE_TEST_CONFIGS = {
       http: ['http', 'get', 'headers', 'json'],
       dio: ['Dio', 'get', 'headers', 'json']
     }
+  },
+  shell: {
+    libs: ['curl'],
+    expectedPatterns: {
+      curl: ['curl', '-X', 'Authorization', 'https://api.example.com']
+    }
+  },
+  rust: {
+    libs: ['reqwest'],
+    expectedPatterns: {
+      reqwest: ['reqwest', 'Client', 'send', 'serde_json']
+    }
   }
 };

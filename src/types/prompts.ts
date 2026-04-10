@@ -54,7 +54,14 @@ export interface PromptVariable {
 
 export interface VariableConstraint {
   /** 约束类型 */
-  type: 'min' | 'max' | 'minLength' | 'maxLength' | 'pattern' | 'enum' | 'custom';
+  type:
+    | 'min'
+    | 'max'
+    | 'minLength'
+    | 'maxLength'
+    | 'pattern'
+    | 'enum'
+    | 'custom';
   /** 约束值 */
   value: unknown;
   /** 约束消息 */
@@ -81,7 +88,15 @@ export interface PromptConfig {
   /** 模型名称 */
   model?: string;
   /** 模型提供商 */
-  provider?: 'openai' | 'anthropic' | 'cohere' | 'huggingface' | 'azure' | 'aws' | 'google' | 'custom';
+  provider?:
+    | 'openai'
+    | 'anthropic'
+    | 'cohere'
+    | 'huggingface'
+    | 'azure'
+    | 'aws'
+    | 'google'
+    | 'custom';
   /** 模型版本 */
   modelVersion?: string;
   /** 模型配置 */
@@ -286,7 +301,10 @@ export interface PromptManager {
   /** 搜索提示词 */
   searchPrompts(options: PromptSearchOptions): Promise<Prompt[]>;
   /** 生成提示词 */
-  generatePrompt(templateId: string, variables: Record<string, unknown>): Promise<PromptGenerationResult>;
+  generatePrompt(
+    templateId: string,
+    variables: Record<string, unknown>
+  ): Promise<PromptGenerationResult>;
   /** 评估提示词 */
   evaluatePrompt(prompt: string): Promise<PromptEvaluationResult>;
   /** 优化提示词 */

@@ -1,40 +1,21 @@
 import { BaseRequestCodeGenerator } from '@/openapi/generator/generator';
-import { Language, HttpMethod, OpenAPIOperation, ExampleOpenAPIParameter, CodeGenerateContext } from '@/types';
+import {
+  CodeGenerateContext,
+  ExampleOpenAPIParameter,
+  HttpMethod,
+  Language,
+  OpenAPIOperation,
+} from '@/types';
 
-/**
- * Ruby Faraday HTTP请求代码生成器
- */
 export class FaradayRubyRequestCodeGenerator extends BaseRequestCodeGenerator {
-  
-  /**
-   * 获取目标编程语言
-   * @returns 编程语言标识符
-   */
   getLanguage(): Language {
     return 'ruby';
   }
 
-  /**
-   * 获取使用的HTTP库名称
-   * @returns HTTP库名称
-   */
   getLibrary(): string {
     return 'faraday';
   }
 
-  /**
-   * 生成具体的HTTP请求代码
-   * @param path - 完整的请求Path
-   * @param method - 请求方法
-   * @param baseUrl - baseUrl
-   * @param operation - OpenAPI操作定义
-   * @param cookies - cookies示例数据
-   * @param headers - 请求头示例数据
-   * @param queryParams - 查询参数示例数据
-   * @param requestBody - 请求体示例数据
-   * @param context - 代码生成上下文
-   * @returns 生成的代码字符串
-   */
   generateCode(
     path: string,
     method: HttpMethod,
@@ -46,120 +27,192 @@ export class FaradayRubyRequestCodeGenerator extends BaseRequestCodeGenerator {
     requestBody: any,
     context: CodeGenerateContext
   ): string {
-    const operationId = operation.operationId || 'api_request';
-    const url = `${baseUrl}${path}`;
-    
-    // 构建请求参数
-    const requestParams = this.buildRequestParams(method, cookies, headers, queryParams, requestBody);
-    
-    return `require 'faraday'
-require 'json'
+    const operationId = this.toIdentifier(
+      operation.operationId,
+      'api_request',
+      'snake'
+    );
+    const expectedSuccessStatusCode =
+      this.getExpectedSuccessStatusCode(context);
+    const successStatusCheck = this.usesAny2xxSuccessStatus(context)
+      ? 'response.status >= 200 && response.status < 300'
+      : `response.status == ${expectedSuccessStatusCode}`;
+    const responseHandlingCode = this.isBinaryResponse(context)
+      ? `data = response.body.dup.force_encoding(Encoding::BINARY)
+    puts "Response bytes: #{data.bytesize}"
+    data`
+      : `puts "Response: #{response.body}"
+    response.body`;
+    const multipartRequire = this.isMultipartRequestBody(context)
+      ? "require 'faraday/multipart'\n"
+      : '';
+    const escapedRequestUrl = this.escapeSingleQuotedString(
+      this.buildRequestUrl(baseUrl, path)
+    );
+    const connectionCode = this.isMultipartRequestBody(context)
+      ? `Faraday.new do |f|
+    f.request :multipart
+    f.request :url_encoded
+    f.adapter Faraday.default_adapter
+  end`
+      : `Faraday.new`;
 
-# ${operation.summary || operation.description || 'API请求'}
+    return `require 'faraday'
+require 'uri'
+${multipartRequire}require 'json'
+
+# ${operation.summary || operation.description || 'API request'}
 def ${operationId}
-  conn = Faraday.new(url: '${baseUrl}') do |f|
-    f.request :json
-    f.response :json
+  conn = ${connectionCode}
+  request_url = '${escapedRequestUrl}'
+${this.buildQueryParamsCode(queryParams)}
+
+  response = conn.${method.toLowerCase()}(request_url) do |req|
+${this.buildRequestSetup(cookies, headers, method, requestBody, context)}
   end
-  
-  ${this.buildQueryParamsCode(queryParams)}
-  
-  response = conn.${method.toLowerCase()}('${path}'${requestParams ? ', ' + requestParams : ''})
-  
-  if response.success?
+
+  if ${successStatusCheck}
     puts "Status: #{response.status}"
-    puts "Response: #{response.body}"
-    response.body
+    ${responseHandlingCode}
   else
     puts "Error: #{response.status} - #{response.body}"
     raise "Request failed with status #{response.status}"
   end
 end
 
-# 调用示例
 ${operationId}`;
   }
 
-  /**
-   * 构建请求参数
-   */
-  private buildRequestParams(
-    method: HttpMethod,
+  private buildRequestSetup(
     cookies: ExampleOpenAPIParameter[],
     headers: ExampleOpenAPIParameter[],
-    queryParams: ExampleOpenAPIParameter[],
-    requestBody: any
+    method: HttpMethod,
+    requestBody: any,
+    context: CodeGenerateContext
   ): string {
-    const params: string[] = [];
+    const lines: string[] = [];
+    const requestHeaders = [...headers];
 
-    // 添加cookies
     if (cookies.length > 0) {
-      const cookiesHash = this.buildCookiesHash(cookies);
-      params.push(`cookies: ${cookiesHash}`);
+      requestHeaders.push({
+        name: 'Cookie',
+        in: 'header',
+        required: false,
+        schema: { type: 'string' },
+        value: this.buildCookieHeaderValue(cookies),
+      });
     }
 
-    // 添加请求头
-    if (headers.length > 0) {
-      const headersHash = this.buildHeadersHash(headers);
-      params.push(`headers: ${headersHash}`);
+    if (
+      this.hasRequestBody(method, requestBody) &&
+      this.shouldAutoAddContentTypeHeader(context) &&
+      !requestHeaders.some(
+        (header) => header.name.toLowerCase() === 'content-type'
+      )
+    ) {
+      requestHeaders.push({
+        name: 'Content-Type',
+        in: 'header',
+        required: false,
+        schema: { type: 'string' },
+        value: context.requestContentType,
+      });
     }
 
-    // 添加查询参数
-    if (queryParams.length > 0) {
-      const paramsHash = this.buildParamsHash(queryParams);
-      params.push(`params: ${paramsHash}`);
+    requestHeaders.forEach((header) => {
+      lines.push(
+        `    req.headers['${this.escapeSingleQuoted(
+          header.name
+        )}'] = '${this.escapeSingleQuoted(
+          this.serializeHeaderParameterValue(header)
+        )}'`
+      );
+    });
+
+    if (this.hasRequestBody(method, requestBody)) {
+      if (this.isMultipartRequestBody(context)) {
+        lines.push('    req.body = {');
+        this.getMultipartFieldParts(requestBody).forEach((part) => {
+          lines.push(
+            `      '${this.escapeSingleQuoted(
+              part.name
+            )}' => '${this.escapeSingleQuoted(part.value)}',`
+          );
+        });
+        this.getMultipartFileParts(requestBody).forEach((part) => {
+          lines.push(
+            `      '${this.escapeSingleQuoted(
+              part.name
+            )}' => Faraday::Multipart::FilePart.new('${this.escapeSingleQuoted(
+              part.filename || part.name
+            )}', '${this.escapeSingleQuoted(
+              part.contentType || 'application/octet-stream'
+            )}')`
+          );
+        });
+        lines.push('    }');
+      } else if (this.isBinaryRequestBody(context)) {
+        lines.push(
+          `    requestBody = File.binread('${this.escapeSingleQuoted(
+            this.getBinaryRequestBodyFileName(requestBody)
+          )}')`
+        );
+        lines.push('    req.body = requestBody');
+      } else if (this.usesStringRequestBody(context)) {
+        lines.push(
+          `    req.body = '${this.escapeSingleQuoted(
+            this.serializeStringRequestBody(requestBody, context)
+          )}'`
+        );
+      } else {
+        lines.push(
+          `    req.body = '${this.escapeSingleQuoted(
+            JSON.stringify(requestBody, null, 2)
+          )}'`
+        );
+      }
     }
 
-    // 添加请求体
-    if (['POST', 'PUT', 'PATCH'].includes(method) && requestBody) {
-      params.push(`body: ${JSON.stringify(requestBody, null, 2)}`);
-    }
-
-    return params.length > 0 ? `{ ${params.join(', ')} }` : '';
+    return lines.join('\n');
   }
 
-  /**
-   * 构建cookies哈希
-   */
-  private buildCookiesHash(cookies: ExampleOpenAPIParameter[]): string {
-    const cookieEntries = cookies.map(cookie => 
-      `'${cookie.name}' => '${cookie.value}'`
-    );
-    return `{ ${cookieEntries.join(', ')} }`;
-  }
-
-  /**
-   * 构建请求头哈希
-   */
-  private buildHeadersHash(headers: ExampleOpenAPIParameter[]): string {
-    const headerEntries = headers.map(header => 
-      `'${header.name}' => '${header.value}'`
-    );
-    return `{ ${headerEntries.join(', ')} }`;
-  }
-
-  /**
-   * 构建查询参数哈希
-   */
-  private buildParamsHash(queryParams: ExampleOpenAPIParameter[]): string {
-    const paramEntries = queryParams.map(param => 
-      `'${param.name}' => '${param.value}'`
-    );
-    return `{ ${paramEntries.join(', ')} }`;
-  }
-
-  /**
-   * 构建查询参数代码
-   */
   private buildQueryParamsCode(queryParams: ExampleOpenAPIParameter[]): string {
-    if (queryParams.length === 0) {
+    if (this.hasAllowReservedQueryParameters(queryParams)) {
+      return `  request_url += (request_url.include?('?') ? '&' : '?') + '${this.escapeSingleQuoted(
+        this.buildSerializedQueryString(queryParams)
+      )}'`;
+    }
+
+    const paramEntries = this.buildQueryParameterEntries(queryParams);
+
+    if (paramEntries.length === 0) {
       return '';
     }
-    
-    const paramEntries = queryParams.map(param => 
-      `params[:${param.name}] = '${param.value}'`
+
+    return paramEntries
+      .map(
+        (param) =>
+          `  request_url += (request_url.include?('?') ? '&' : '?') + '${this.escapeSingleQuoted(
+            param.name
+          )}=' + URI.encode_www_form_component('${this.escapeSingleQuoted(
+            param.value
+          )}')`
+      )
+      .join('\n');
+  }
+
+  private hasRequestBody(method: HttpMethod, requestBody: any): boolean {
+    return (
+      ['POST', 'PUT', 'PATCH'].includes(method) &&
+      requestBody !== undefined &&
+      requestBody !== null
     );
-    
-    return paramEntries.join('\n  ');
+  }
+
+  private escapeSingleQuoted(value: string): string {
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/'/g, "\\'")
+      .replace(/\r?\n/g, '\\n');
   }
 }

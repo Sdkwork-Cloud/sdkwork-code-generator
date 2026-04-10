@@ -1,40 +1,21 @@
 import { BaseRequestCodeGenerator } from '@/openapi/generator/generator';
-import { Language, HttpMethod, OpenAPIOperation, ExampleOpenAPIParameter, CodeGenerateContext } from '@/types';
+import {
+  CodeGenerateContext,
+  ExampleOpenAPIParameter,
+  HttpMethod,
+  Language,
+  OpenAPIOperation,
+} from '@/types';
 
-/**
- * Swift Alamofire HTTP请求代码生成器
- */
 export class AlamofireSwiftRequestCodeGenerator extends BaseRequestCodeGenerator {
-  
-  /**
-   * 获取目标编程语言
-   * @returns 编程语言标识符
-   */
   getLanguage(): Language {
     return 'swift';
   }
 
-  /**
-   * 获取使用的HTTP库名称
-   * @returns HTTP库名称
-   */
   getLibrary(): string {
     return 'alamofire';
   }
 
-  /**
-   * 生成具体的HTTP请求代码
-   * @param path - 完整的请求Path
-   * @param method - 请求方法
-   * @param baseUrl - baseUrl
-   * @param operation - OpenAPI操作定义
-   * @param cookies - cookies示例数据
-   * @param headers - 请求头示例数据
-   * @param queryParams - 查询参数示例数据
-   * @param requestBody - 请求体示例数据
-   * @param context - 代码生成上下文
-   * @returns 生成的代码字符串
-   */
   generateCode(
     path: string,
     method: HttpMethod,
@@ -46,115 +27,238 @@ export class AlamofireSwiftRequestCodeGenerator extends BaseRequestCodeGenerator
     requestBody: any,
     context: CodeGenerateContext
   ): string {
-    const operationId = operation.operationId || 'apiRequest';
-    const url = `${baseUrl}${path}`;
-    
-    // 构建请求参数
-    const parameters = this.buildRequestParameters(method, cookies, headers, queryParams, requestBody);
-    
-    return `import Alamofire
-
-// ${operation.summary || operation.description || 'API请求'}
-func ${operationId}() {
-    let url = "${url}"
-    ${this.buildQueryParamsCode(queryParams)}
-    
-    AF.request(url, method: .${method.toLowerCase()}${parameters ? ', ' + parameters : ''})
-        .validate()
-        .responseJSON { response in
+    const operationId = this.toIdentifier(
+      operation.operationId,
+      'apiRequest',
+      'camel'
+    );
+    const expectedSuccessStatusCode =
+      this.getExpectedSuccessStatusCode(context);
+    const validationStatusCode = this.usesAny2xxSuccessStatus(context)
+      ? '200..<300'
+      : `[${expectedSuccessStatusCode}]`;
+    const responseHandler = this.isBinaryResponse(context)
+      ? `.responseData { response in
+            switch response.result {
+            case .success(let value):
+                print("Success bytes: \\(value.count)")
+            case .failure(let error):
+                print("Error: \\(error.localizedDescription)")
+            }
+        }`
+      : `.responseString { response in
             switch response.result {
             case .success(let value):
                 print("Success: \\(value)")
             case .failure(let error):
                 print("Error: \\(error.localizedDescription)")
             }
-        }
+        }`;
+    const requestSetup = this.buildRequestSetup(
+      method,
+      cookies,
+      headers,
+      queryParams,
+      requestBody,
+      this.escapeDoubleQuotedString(this.buildRequestUrl(baseUrl, path)),
+      context
+    );
+
+    return `import Foundation
+import Alamofire
+
+// ${operation.summary || operation.description || 'API request'}
+func ${operationId}() {
+    ${requestSetup}
+
+    request
+        .validate(statusCode: ${validationStatusCode})
+        ${responseHandler}
 }
 
-// 调用示例
 ${operationId}()`;
   }
 
-  /**
-   * 构建请求参数
-   */
-  private buildRequestParameters(
+  private buildRequestSetup(
     method: HttpMethod,
     cookies: ExampleOpenAPIParameter[],
     headers: ExampleOpenAPIParameter[],
     queryParams: ExampleOpenAPIParameter[],
-    requestBody: any
+    requestBody: any,
+    url: string,
+    context: CodeGenerateContext
   ): string {
-    const params: string[] = [];
+    const headerLines = this.buildHeaderEntries(
+      cookies,
+      headers,
+      method,
+      requestBody,
+      context
+    );
+    const queryLines = this.buildQueryParamsCode(queryParams);
 
-    // 添加cookies
+    if (this.hasRequestBody(method, requestBody)) {
+      if (this.isMultipartRequestBody(context)) {
+        const fieldLines = this.getMultipartFieldParts(requestBody).map(
+          (part) =>
+            `        multipartFormData.append(Data("${this.escapeSwiftString(
+              part.value
+            )}".utf8), withName: "${this.escapeSwiftString(part.name)}")`
+        );
+        const filePart = this.getMultipartFileParts(requestBody)[0];
+        const fileLines = filePart
+          ? [
+              `        multipartFormData.append(Data("${this.escapeSwiftString(
+                filePart.value
+              )}".utf8), withName: "${this.escapeSwiftString(
+                filePart.name
+              )}", fileName: "${this.escapeSwiftString(
+                filePart.filename || filePart.name
+              )}", mimeType: "${this.escapeSwiftString(
+                filePart.contentType || 'application/octet-stream'
+              )}")`,
+            ]
+          : [];
+
+        return `var url = "${url}"
+    ${queryLines}
+    let headers: HTTPHeaders = [
+        ${headerLines}
+    ]
+    let request = AF.upload(multipartFormData: { multipartFormData in
+${[...fieldLines, ...fileLines].join('\n')}
+    }, to: url, method: .${method.toLowerCase()}, headers: headers)`;
+      }
+
+      if (this.isBinaryRequestBody(context)) {
+        return `var url = "${url}"
+    ${queryLines}
+    let headers: HTTPHeaders = [
+        ${headerLines}
+    ]
+    let requestBody = try! Data(contentsOf: URL(fileURLWithPath: "${this.escapeSwiftString(
+      this.getBinaryRequestBodyFileName(requestBody)
+    )}"))
+    let request = AF.upload(requestBody, to: url, method: .${method.toLowerCase()}, headers: headers)`;
+      }
+
+      if (this.usesStringRequestBody(context)) {
+        return `var url = "${url}"
+    ${queryLines}
+    let headers: HTTPHeaders = [
+        ${headerLines}
+    ]
+    let bodyData = "${this.escapeSwiftString(
+      this.serializeStringRequestBody(requestBody, context)
+    )}".data(using: .utf8)!
+    let request = AF.upload(bodyData, to: url, method: .${method.toLowerCase()}, headers: headers)`;
+      }
+
+      return `var url = "${url}"
+    ${queryLines}
+    let headers: HTTPHeaders = [
+        ${headerLines}
+    ]
+    let bodyData = "${this.escapeSwiftString(
+      JSON.stringify(requestBody, null, 2)
+    )}".data(using: .utf8)!
+    let request = AF.upload(bodyData, to: url, method: .${method.toLowerCase()}, headers: headers)`;
+    }
+
+    return `var url = "${url}"
+    ${queryLines}
+    let headers: HTTPHeaders = [
+        ${headerLines}
+    ]
+    let request = AF.request(url, method: .${method.toLowerCase()}, headers: headers)`;
+  }
+
+  private buildHeaderEntries(
+    cookies: ExampleOpenAPIParameter[],
+    headers: ExampleOpenAPIParameter[],
+    method: HttpMethod,
+    requestBody: any,
+    context: CodeGenerateContext
+  ): string {
+    const requestHeaders = [...headers];
+
     if (cookies.length > 0) {
-      const cookiesDict = this.buildCookiesDict(cookies);
-      params.push(`cookies: ${cookiesDict}`);
+      requestHeaders.push({
+        name: 'Cookie',
+        in: 'header',
+        required: false,
+        schema: { type: 'string' },
+        value: this.buildCookieHeaderValue(cookies),
+      });
     }
 
-    // 添加请求头
-    if (headers.length > 0) {
-      const headersDict = this.buildHeadersDict(headers);
-      params.push(`headers: ${headersDict}`);
+    if (
+      this.hasRequestBody(method, requestBody) &&
+      this.shouldAutoAddContentTypeHeader(context) &&
+      !requestHeaders.some(
+        (header) => header.name.toLowerCase() === 'content-type'
+      )
+    ) {
+      requestHeaders.push({
+        name: 'Content-Type',
+        in: 'header',
+        required: false,
+        schema: { type: 'string' },
+        value: context.requestContentType,
+      });
     }
 
-    // 添加查询参数
-    if (queryParams.length > 0) {
-      const parametersDict = this.buildParametersDict(queryParams);
-      params.push(`parameters: ${parametersDict}`);
-    }
-
-    // 添加请求体
-    if (['POST', 'PUT', 'PATCH'].includes(method) && requestBody) {
-      params.push(`parameters: ${JSON.stringify(requestBody, null, 2)}`);
-    }
-
-    return params.length > 0 ? `[${params.join(', ')}]` : '';
-  }
-
-  /**
-   * 构建cookies字典
-   */
-  private buildCookiesDict(cookies: ExampleOpenAPIParameter[]): string {
-    const cookieEntries = cookies.map(cookie => 
-      `"${cookie.name}": "${cookie.value}"`
-    );
-    return `[${cookieEntries.join(', ')}]`;
-  }
-
-  /**
-   * 构建请求头字典
-   */
-  private buildHeadersDict(headers: ExampleOpenAPIParameter[]): string {
-    const headerEntries = headers.map(header => 
-      `"${header.name}": "${header.value}"`
-    );
-    return `[${headerEntries.join(', ')}]`;
-  }
-
-  /**
-   * 构建参数字典
-   */
-  private buildParametersDict(queryParams: ExampleOpenAPIParameter[]): string {
-    const paramEntries = queryParams.map(param => 
-      `"${param.name}": "${param.value}"`
-    );
-    return `[${paramEntries.join(', ')}]`;
-  }
-
-  /**
-   * 构建查询参数代码
-   */
-  private buildQueryParamsCode(queryParams: ExampleOpenAPIParameter[]): string {
-    if (queryParams.length === 0) {
+    if (requestHeaders.length === 0) {
       return '';
     }
-    
-    const paramEntries = queryParams.map(param => 
-      `url += "?${param.name}=\\(param.value)"`
+
+    return requestHeaders
+      .map(
+        (header) =>
+          `"${this.escapeSwiftString(header.name)}": "${this.escapeSwiftString(
+            this.serializeHeaderParameterValue(header)
+          )}"`
+      )
+      .join(',\n        ');
+  }
+
+  private buildQueryParamsCode(queryParams: ExampleOpenAPIParameter[]): string {
+    if (this.hasAllowReservedQueryParameters(queryParams)) {
+      return `url += (url.contains("?") ? "&" : "?") + "${this.escapeSwiftString(
+        this.buildSerializedQueryString(queryParams)
+      )}"`;
+    }
+
+    const paramEntries = this.buildQueryParameterEntries(queryParams);
+
+    if (paramEntries.length === 0) {
+      return '';
+    }
+
+    return paramEntries
+      .map(
+        (param) =>
+          `url += (url.contains("?") ? "&" : "?") + "${this.escapeSwiftString(
+            param.name
+          )}=" + "${this.escapeSwiftString(
+            String(param.value)
+          )}".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&=?+")))!`
+      )
+      .join('\n    ');
+  }
+
+  private hasRequestBody(method: HttpMethod, requestBody: any): boolean {
+    return (
+      ['POST', 'PUT', 'PATCH'].includes(method) &&
+      requestBody !== undefined &&
+      requestBody !== null
     );
-    
-    return paramEntries.join('\n    ');
+  }
+
+  private escapeSwiftString(value: string): string {
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\r?\n/g, '\\n');
   }
 }

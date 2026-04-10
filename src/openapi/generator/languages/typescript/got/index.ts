@@ -1,40 +1,21 @@
 import { BaseRequestCodeGenerator } from '@/openapi/generator/generator';
-import { Language, HttpMethod, OpenAPIOperation, ExampleOpenAPIParameter, CodeGenerateContext } from '@/types';
+import {
+  CodeGenerateContext,
+  ExampleOpenAPIParameter,
+  HttpMethod,
+  Language,
+  OpenAPIOperation,
+} from '@/types';
 
-/**
- * TypeScript Got HTTP请求代码生成器
- */
 export class GotTypeScriptRequestCodeGenerator extends BaseRequestCodeGenerator {
-  
-  /**
-   * 获取目标编程语言
-   * @returns 编程语言标识符
-   */
   getLanguage(): Language {
     return 'typescript';
   }
 
-  /**
-   * 获取使用的HTTP库名称
-   * @returns HTTP库名称
-   */
   getLibrary(): string {
     return 'got';
   }
 
-  /**
-   * 生成具体的HTTP请求代码
-   * @param path - 完整的请求Path
-   * @param method - 请求方法
-   * @param baseUrl - baseUrl
-   * @param operation - OpenAPI操作定义
-   * @param cookies - cookies示例数据
-   * @param headers - 请求头示例数据
-   * @param queryParams - 查询参数示例数据
-   * @param requestBody - 请求体示例数据
-   * @param context - 代码生成上下文
-   * @returns 生成的代码字符串
-   */
   generateCode(
     path: string,
     method: HttpMethod,
@@ -46,14 +27,52 @@ export class GotTypeScriptRequestCodeGenerator extends BaseRequestCodeGenerator 
     requestBody: any,
     context: CodeGenerateContext
   ): string {
-    const operationId = operation.operationId || 'apiRequest';
-    const interfaceName = this.toPascalCase(operationId);
-    const url = `${baseUrl}${path}`;
-    
-    return `import got from 'got';
+    const operationId = this.toIdentifier(
+      operation.operationId,
+      'apiRequest',
+      'camel'
+    );
+    const interfaceName = this.toIdentifier(
+      operation.operationId,
+      'ApiRequest',
+      'pascal'
+    );
+    const url = this.escapeDoubleQuotedString(
+      this.buildRequestUrl(baseUrl, path)
+    );
+    const expectedSuccessStatusCode =
+      this.getExpectedSuccessStatusCode(context);
+    const successStatusCheck = this.usesAny2xxSuccessStatus(context)
+      ? 'response.statusCode < 200 || response.statusCode >= 300'
+      : `response.statusCode !== ${expectedSuccessStatusCode}`;
+    const binarySetup = this.isBinaryRequestBody(context)
+      ? `    const requestBody = await readFile('${this.escapeSingleQuoted(
+          this.getBinaryRequestBodyFileName(requestBody)
+        )}');\n\n`
+      : '';
+    const multipartSetup =
+      this.isMultipartRequestBody(context) && requestBody
+        ? `    ${this.buildMultipartFormDataSetup(requestBody)}\n\n`
+        : '';
+    const binaryImport = this.isBinaryRequestBody(context)
+      ? `import { readFile } from 'fs/promises';\n`
+      : '';
+    const responseDataExpression = this.isBinaryResponse(context)
+      ? 'response.body'
+      : this.usesStringResponse(context)
+      ? 'response.body'
+      : 'JSON.parse(response.body)';
+    const responseLoggingCode = this.isBinaryResponse(context)
+      ? "console.log('Response bytes:', data.length);"
+      : "console.log('Response:', data);";
+    const responseTypeOption = this.isBinaryResponse(context)
+      ? `\n        responseType: 'buffer' as const,`
+      : '';
+
+    return `${binaryImport}import got from 'got';
 
 /**
- * ${operation.summary || operation.description || 'API请求'}
+ * ${operation.summary || operation.description || 'API request'}
  * ${operation.description ? ` * ${operation.description}` : ''}
  */
 
@@ -66,30 +85,28 @@ interface ${interfaceName}Response {
     status: number;
 }
 
-/**
- * ${operation.summary || 'API请求函数'}
- */
 async function ${operationId}(): Promise<${interfaceName}Response> {
-    const url = "${url}";
+    let url = "${url}";
     ${this.buildQueryParamsCode(queryParams)}
-    
+${binarySetup}${multipartSetup}
+
     const options = {
         method: '${method.toUpperCase()}' as const,
-        ${this.buildCookiesCode(cookies)}
-        ${this.buildHeadersCode(headers)}
-        ${this.buildRequestBodyCode(method, requestBody)}
+        ${responseTypeOption}
+        ${this.buildHeadersCode(cookies, headers, method, requestBody, context)}
+        ${this.buildRequestBodyCode(method, requestBody, context)}
     };
-    
+
     try {
         const response = await got(url, options);
-        
-        if (response.statusCode !== 200) {
+
+        if (${successStatusCheck}) {
             throw new Error(\`HTTP error! status: \${response.statusCode}\`);
         }
-        
-        const data = JSON.parse(response.body);
-        console.log('Response:', data);
-        
+
+        const data = ${responseDataExpression};
+        ${responseLoggingCode}
+
         return {
             data,
             status: response.statusCode
@@ -100,85 +117,160 @@ async function ${operationId}(): Promise<${interfaceName}Response> {
     }
 }
 
-// 调用示例
+// Example usage
 ${operationId}();`;
   }
 
-  /**
-   * 构建cookies代码
-   */
-  private buildCookiesCode(cookies: ExampleOpenAPIParameter[]): string {
-    if (cookies.length === 0) {
+  private buildHeadersCode(
+    cookies: ExampleOpenAPIParameter[],
+    headers: ExampleOpenAPIParameter[],
+    method: HttpMethod,
+    requestBody: any,
+    context: CodeGenerateContext
+  ): string {
+    const requestHeaders = [...headers];
+
+    if (cookies.length > 0) {
+      requestHeaders.push({
+        name: 'Cookie',
+        in: 'header',
+        required: false,
+        schema: { type: 'string' },
+        value: this.buildCookieHeaderValue(cookies),
+      });
+    }
+
+    if (
+      this.hasRequestBody(method, requestBody) &&
+      this.shouldAutoAddContentTypeHeader(context) &&
+      !requestHeaders.some(
+        (header) => header.name.toLowerCase() === 'content-type'
+      )
+    ) {
+      requestHeaders.push({
+        name: 'Content-Type',
+        in: 'header',
+        required: false,
+        schema: { type: 'string' },
+        value: context.requestContentType,
+      });
+    }
+
+    if (requestHeaders.length === 0) {
       return '';
     }
-    
-    const cookieEntries = cookies.map(cookie => 
-      `'${cookie.name}=${cookie.value}'`
+
+    const headerEntries = requestHeaders.map(
+      (header) =>
+        `'${this.escapeSingleQuoted(header.name)}': '${this.escapeSingleQuoted(
+          this.serializeHeaderParameterValue(header)
+        )}'`
     );
-    
-    return `cookie: '${cookieEntries.join('; ')}',`;
+
+    return `headers: {\n            ${headerEntries.join(
+      ',\n            '
+    )}\n        },`;
   }
 
-  /**
-   * 构建请求接口定义
-   */
   private buildRequestInterface(requestBody: any): string {
     if (!requestBody || typeof requestBody !== 'object') {
-      return '// 请求参数定义';
+      return '// Request parameter definition';
     }
-    
-    const properties = Object.keys(requestBody).map(key => {
-      const value = requestBody[key];
-      return `${key}: ${this.getTypeScriptType(value)};`;
-    });
-    
-    return properties.join('\n    ');
+
+    if (this.isMultipartPartsRequestBody(requestBody)) {
+      const seen = new Set<string>();
+      return this.getMultipartParts(requestBody)
+        .filter((part) => {
+          if (seen.has(part.name)) {
+            return false;
+          }
+
+          seen.add(part.name);
+          return true;
+        })
+        .map((part) => `${this.toTypeScriptPropertyKey(part.name)}: string;`)
+        .join('\n    ');
+    }
+
+    return Object.keys(requestBody)
+      .map(
+        (key) =>
+          `${this.toTypeScriptPropertyKey(key)}: ${this.getTypeScriptType(
+            requestBody[key]
+          )};`
+      )
+      .join('\n    ');
   }
 
-  /**
-   * 构建查询参数代码
-   */
   private buildQueryParamsCode(queryParams: ExampleOpenAPIParameter[]): string {
-    if (queryParams.length === 0) {
+    if (this.hasAllowReservedQueryParameters(queryParams)) {
+      return `const queryString = '${this.escapeSingleQuoted(
+        this.buildSerializedQueryString(queryParams)
+      )}';\n    if (queryString) {\n        url += (url.includes('?') ? '&' : '?') + queryString;\n    }`;
+    }
+
+    const paramEntries = this.buildQueryParameterEntries(queryParams);
+
+    if (paramEntries.length === 0) {
       return '';
     }
-    
-    const paramEntries = queryParams.map(param => 
-      `url += (url.includes('?') ? '&' : '?') + '${param.name}=' + encodeURIComponent('${param.value}');`
+
+    const paramLines = paramEntries.map(
+      (param) =>
+        `queryParams.append('${this.escapeSingleQuoted(
+          param.name
+        )}', '${this.escapeSingleQuoted(param.value)}');`
     );
-    
-    return paramEntries.join('\n    ');
+
+    return `const queryParams = new URLSearchParams();\n    ${paramLines.join(
+      '\n    '
+    )}\n    const queryString = queryParams.toString();\n    if (queryString) {\n        url += (url.includes('?') ? '&' : '?') + queryString;\n    }`;
   }
 
-  /**
-   * 构建请求头代码
-   */
-  private buildHeadersCode(headers: ExampleOpenAPIParameter[]): string {
-    if (headers.length === 0) {
-      return 'headers: {\n            \'Content-Type\': \'application/json\'\n        },';
-    }
-    
-    const headerEntries = headers.map(header => 
-      `'${header.name}': '${header.value}'`
-    );
-    
-    return `headers: {\n            ${headerEntries.join(',\n            ')}\n        },`;
-  }
-
-  /**
-   * 构建请求体代码
-   */
-  private buildRequestBodyCode(method: HttpMethod, requestBody: any): string {
-    if (!['POST', 'PUT', 'PATCH'].includes(method) || !requestBody) {
+  private buildRequestBodyCode(
+    method: HttpMethod,
+    requestBody: any,
+    context: CodeGenerateContext
+  ): string {
+    if (!this.hasRequestBody(method, requestBody)) {
       return '';
     }
-    
+
+    if (this.isMultipartRequestBody(context)) {
+      return 'body: formData,';
+    }
+
+    if (this.isBinaryRequestBody(context)) {
+      return 'body: requestBody,';
+    }
+
+    if (this.usesStringRequestBody(context)) {
+      return `body: '${this.escapeSingleQuoted(
+        this.serializeStringRequestBody(requestBody, context)
+      )}',`;
+    }
+
     return `json: ${JSON.stringify(requestBody, null, 8)},`;
   }
 
-  /**
-   * 获取TypeScript类型
-   */
+  private buildMultipartFormDataSetup(requestBody: any): string {
+    const multipartLines = this.getMultipartParts(requestBody).map((part) =>
+      part.kind === 'file'
+        ? `formData.append('${this.escapeSingleQuoted(
+            part.name
+          )}', new Blob(['${this.escapeSingleQuoted(
+            part.value
+          )}']), '${this.escapeSingleQuoted(part.filename || part.name)}');`
+        : `formData.append('${this.escapeSingleQuoted(
+            part.name
+          )}', '${this.escapeSingleQuoted(part.value)}');`
+    );
+
+    return `const formData = new FormData();\n    ${multipartLines.join(
+      '\n    '
+    )}`;
+  }
+
   private getTypeScriptType(value: any): string {
     if (typeof value === 'string') return 'string';
     if (typeof value === 'number') return 'number';
@@ -187,13 +279,18 @@ ${operationId}();`;
     return 'any';
   }
 
-  /**
-   * 转换为帕斯卡命名
-   */
-  private toPascalCase(str: string): string {
-    const words = str.split(/[_\-\s]/);
-    return words.map(word => 
-      word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
-    ).join('');
+  private hasRequestBody(method: HttpMethod, requestBody: any): boolean {
+    return (
+      ['POST', 'PUT', 'PATCH'].includes(method) &&
+      requestBody !== undefined &&
+      requestBody !== null
+    );
+  }
+
+  private escapeSingleQuoted(value: string): string {
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/'/g, "\\'")
+      .replace(/\r?\n/g, '\\n');
   }
 }

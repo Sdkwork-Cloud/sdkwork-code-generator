@@ -1,40 +1,21 @@
 import { BaseRequestCodeGenerator } from '@/openapi/generator/generator';
-import { Language, HttpMethod, OpenAPIOperation, ExampleOpenAPIParameter, CodeGenerateContext } from '@/types';
+import {
+  CodeGenerateContext,
+  ExampleOpenAPIParameter,
+  HttpMethod,
+  Language,
+  OpenAPIOperation,
+} from '@/types';
 
-/**
- * Ruby HTTParty HTTP请求代码生成器
- */
 export class HttpartyRubyRequestCodeGenerator extends BaseRequestCodeGenerator {
-  
-  /**
-   * 获取目标编程语言
-   * @returns 编程语言标识符
-   */
   getLanguage(): Language {
     return 'ruby';
   }
 
-  /**
-   * 获取使用的HTTP库名称
-   * @returns HTTP库名称
-   */
   getLibrary(): string {
     return 'httparty';
   }
 
-  /**
-   * 生成具体的HTTP请求代码
-   * @param path - 完整的请求Path
-   * @param method - 请求方法
-   * @param baseUrl - baseUrl
-   * @param operation - OpenAPI操作定义
-   * @param cookies - cookies示例数据
-   * @param headers - 请求头示例数据
-   * @param queryParams - 查询参数示例数据
-   * @param requestBody - 请求体示例数据
-   * @param context - 代码生成上下文
-   * @returns 生成的代码字符串
-   */
   generateCode(
     path: string,
     method: HttpMethod,
@@ -46,95 +27,197 @@ export class HttpartyRubyRequestCodeGenerator extends BaseRequestCodeGenerator {
     requestBody: any,
     context: CodeGenerateContext
   ): string {
-    const operationId = operation.operationId || 'api_request';
-    const url = `${baseUrl}${path}`;
-    
+    const operationId = this.toIdentifier(
+      operation.operationId,
+      'api_request',
+      'snake'
+    );
+    const url = this.escapeDoubleQuotedString(
+      this.buildRequestUrl(baseUrl, path)
+    );
+    const expectedSuccessStatusCode =
+      this.getExpectedSuccessStatusCode(context);
+    const successStatusCheck = this.usesAny2xxSuccessStatus(context)
+      ? 'response.code < 200 || response.code >= 300'
+      : `response.code != ${expectedSuccessStatusCode}`;
+    const requestBodySetup =
+      this.hasRequestBody(method, requestBody) &&
+      this.isBinaryRequestBody(context)
+        ? `  requestBody = File.binread('${this.escapeSingleQuoted(
+            this.getBinaryRequestBodyFileName(requestBody)
+          )}')\n\n`
+        : '';
+    const responseHandlingCode = this.isBinaryResponse(context)
+      ? `data = response.body.dup.force_encoding(Encoding::BINARY)
+  puts "Response bytes: #{data.bytesize}"`
+      : this.usesStringResponse(context)
+      ? `data = response.body
+  puts "Response: #{data}"`
+      : `data = JSON.parse(response.body)
+  puts "Response: #{JSON.pretty_generate(data)}"`;
+
     return `require 'httparty'
 require 'json'
 
 =begin
-${operation.summary || operation.description || 'API请求'}
+${operation.summary || operation.description || 'API request'}
 ${operation.description ? ` * ${operation.description}` : ''}
 =end
 
 def ${operationId}
   url = "${url}"
   ${this.buildQueryParamsCode(queryParams)}
-  
+${requestBodySetup}
+
   options = {
-    ${this.buildCookiesCode(cookies)}
-    ${this.buildHeadersCode(headers)}
-    ${this.buildRequestBodyCode(method, requestBody)}
+    ${this.buildHeadersCode(headers, cookies, method, requestBody, context)}
+    ${this.buildRequestBodyCode(method, requestBody, context)}
   }
-  
+
   response = HTTParty.${method.toLowerCase()}(url, options)
-  
-  if response.code != 200
+
+  if ${successStatusCheck}
     raise "HTTP error! status: #{response.code}"
   end
-  
-  data = JSON.parse(response.body)
-  puts "Response: #{JSON.pretty_generate(data)}"
+
+  ${responseHandlingCode}
   data
 end
 
-# 调用示例
 ${operationId}()`;
   }
 
-  /**
-   * 构建cookies代码
-   */
-  private buildCookiesCode(cookies: ExampleOpenAPIParameter[]): string {
-    if (cookies.length === 0) {
-      return '';
-    }
-    
-    const cookieEntries = cookies.map(cookie => 
-      `'${cookie.name}' => '${cookie.value}'`
-    );
-    
-    return `cookies: {\n      ${cookieEntries.join(',\n      ')}\n    },`;
-  }
-
-  /**
-   * 构建查询参数代码
-   */
   private buildQueryParamsCode(queryParams: ExampleOpenAPIParameter[]): string {
-    if (queryParams.length === 0) {
+    if (this.hasAllowReservedQueryParameters(queryParams)) {
+      return `url += (url.include?('?') ? '&' : '?') + '${this.escapeSingleQuoted(
+        this.buildSerializedQueryString(queryParams)
+      )}'`;
+    }
+
+    const paramEntries = this.buildQueryParameterEntries(queryParams);
+
+    if (paramEntries.length === 0) {
       return '';
     }
-    
-    const paramEntries = queryParams.map(param => 
-      `url += (url.include?('?') ? '&' : '?') + '${param.name}=' + URI.encode_www_form_component('${param.value}')`
-    );
-    
-    return paramEntries.join('\n  ');
+
+    return paramEntries
+      .map(
+        (param) =>
+          `url += (url.include?('?') ? '&' : '?') + '${this.escapeSingleQuoted(
+            param.name
+          )}=' + URI.encode_www_form_component('${this.escapeSingleQuoted(
+            param.value
+          )}')`
+      )
+      .join('\n  ');
   }
 
-  /**
-   * 构建请求头代码
-   */
-  private buildHeadersCode(headers: ExampleOpenAPIParameter[]): string {
-    if (headers.length === 0) {
-      return `headers: {\n      'Content-Type' => 'application/json'\n    },`;
+  private buildHeadersCode(
+    headers: ExampleOpenAPIParameter[],
+    cookies: ExampleOpenAPIParameter[],
+    method: HttpMethod,
+    requestBody: any,
+    context: CodeGenerateContext
+  ): string {
+    const requestHeaders = [...headers];
+    const cookieHeader = this.buildCookieHeaderParameter(cookies);
+
+    if (cookieHeader) {
+      requestHeaders.push(cookieHeader);
     }
-    
-    const headerEntries = headers.map(header => 
-      `'${header.name}' => '${header.value}'`
+
+    if (
+      this.hasRequestBody(method, requestBody) &&
+      this.shouldAutoAddContentTypeHeader(context) &&
+      !requestHeaders.some(
+        (header) => header.name.toLowerCase() === 'content-type'
+      )
+    ) {
+      requestHeaders.push({
+        name: 'Content-Type',
+        in: 'header',
+        required: false,
+        schema: { type: 'string' },
+        value: context.requestContentType,
+      });
+    }
+
+    if (requestHeaders.length === 0) {
+      return '';
+    }
+
+    const headerEntries = requestHeaders.map(
+      (header) =>
+        `'${this.escapeSingleQuoted(
+          header.name
+        )}' => '${this.escapeSingleQuoted(
+          this.serializeHeaderParameterValue(header)
+        )}'`
     );
-    
+
     return `headers: {\n      ${headerEntries.join(',\n      ')}\n    },`;
   }
 
-  /**
-   * 构建请求体代码
-   */
-  private buildRequestBodyCode(method: HttpMethod, requestBody: any): string {
-    if (!['POST', 'PUT', 'PATCH'].includes(method) || !requestBody) {
+  private buildRequestBodyCode(
+    method: HttpMethod,
+    requestBody: any,
+    context: CodeGenerateContext
+  ): string {
+    if (!this.hasRequestBody(method, requestBody)) {
       return '';
     }
-    
-    return `body: ${JSON.stringify(requestBody, null, 6)}.to_json,`;
+
+    if (this.isMultipartRequestBody(context)) {
+      const fieldLines = this.getMultipartFieldParts(requestBody).map(
+        (part) =>
+          `      '${this.escapeSingleQuoted(
+            part.name
+          )}' => '${this.escapeSingleQuoted(part.value)}',`
+      );
+      const filePart = this.getMultipartFileParts(requestBody)[0];
+      const fileLines = filePart
+        ? [
+            `      '${this.escapeSingleQuoted(
+              filePart.name
+            )}' => File.open('${this.escapeSingleQuoted(
+              filePart.filename || filePart.name
+            )}')`,
+          ]
+        : [];
+
+      return `multipart: true,\n    body: {\n${[
+        ...fieldLines,
+        ...fileLines,
+      ].join('\n')}\n    },`;
+    }
+
+    if (this.isBinaryRequestBody(context)) {
+      return 'body: requestBody,';
+    }
+
+    if (this.usesStringRequestBody(context)) {
+      return `body: '${this.escapeSingleQuoted(
+        this.serializeStringRequestBody(requestBody, context)
+      )}',`;
+    }
+
+    return `body: '${this.escapeSingleQuoted(
+      JSON.stringify(requestBody, null, 2)
+    )}',`;
+  }
+
+  private hasRequestBody(method: HttpMethod, requestBody: any): boolean {
+    return (
+      ['POST', 'PUT', 'PATCH'].includes(method) &&
+      requestBody !== undefined &&
+      requestBody !== null
+    );
+  }
+
+  private escapeSingleQuoted(value: string): string {
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/'/g, "\\'")
+      .replace(/\r?\n/g, '\\n');
   }
 }

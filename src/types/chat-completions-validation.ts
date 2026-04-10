@@ -10,7 +10,7 @@ import {
   ChatCompletionFunctionCall,
   ChatCompletionToolCall,
   ChatCompletionStreamResponse,
-  ChatCompletionError
+  ChatCompletionError,
 } from './chat-completions';
 
 /**
@@ -30,10 +30,10 @@ export function validateChatCompletionStructure(): {
   const requiredParams = ['model', 'messages'];
   const request: Partial<ChatCompletionRequest> = {
     model: 'gpt-4',
-    messages: []
+    messages: [],
   };
 
-  requiredParams.forEach(param => {
+  requiredParams.forEach((param) => {
     if (!(param in request)) {
       issues.push(`缺少必需参数: ${param}`);
     }
@@ -46,17 +46,24 @@ export function validateChatCompletionStructure(): {
     'service_tier',
     'reasoning_token_budget',
     'store',
-    'parallel_tool_calls'
+    'parallel_tool_calls',
   ];
 
-  latestFeatures.forEach(feature => {
+  latestFeatures.forEach((feature) => {
     if (!(feature in request)) {
       missingFeatures.push(`缺少最新功能: ${feature}`);
     }
   });
 
   // 检查完成原因枚举
-  const validFinishReasons = ['stop', 'length', 'function_call', 'tool_calls', 'content_filter', 'thinking'];
+  const validFinishReasons = [
+    'stop',
+    'length',
+    'function_call',
+    'tool_calls',
+    'content_filter',
+    'thinking',
+  ];
   const testFinishReason: any = 'thinking';
   if (!validFinishReasons.includes(testFinishReason)) {
     issues.push(`完成原因枚举不完整，缺少: thinking`);
@@ -72,7 +79,7 @@ export function validateChatCompletionStructure(): {
   // 检查流式响应支持
   const streamResponse: Partial<ChatCompletionStreamResponse> = {
     object: 'chat.completion.chunk',
-    choices: []
+    choices: [],
   };
 
   if (streamResponse.object !== 'chat.completion.chunk') {
@@ -83,7 +90,7 @@ export function validateChatCompletionStructure(): {
     isValid: issues.length === 0 && missingFeatures.length === 0,
     issues,
     missingFeatures,
-    extraFeatures
+    extraFeatures,
   };
 }
 
@@ -115,12 +122,14 @@ export function runValidationTests(): void {
 
   if (validation.issues.length > 0) {
     console.log('❌ 发现的问题:');
-    validation.issues.forEach(issue => console.log(`   - ${issue}`));
+    validation.issues.forEach((issue) => console.log(`   - ${issue}`));
   }
 
   if (validation.missingFeatures.length > 0) {
     console.log('⚠️ 缺失的功能:');
-    validation.missingFeatures.forEach(feature => console.log(`   - ${feature}`));
+    validation.missingFeatures.forEach((feature) =>
+      console.log(`   - ${feature}`)
+    );
   }
 
   console.log(`📊 验证结果: ${validation.isValid ? '✅ 通过' : '❌ 未通过'}`);

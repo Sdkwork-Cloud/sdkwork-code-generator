@@ -8,74 +8,97 @@ import {
 } from '@/types';
 
 export abstract class BaseExampleGenerator implements ExampleGenerator {
-  /**
-   * 生成所有参数示例
-   */
   abstract generateParameters(
     parameters: OpenAPIParameter[],
     operation: OpenAPIOperation,
     context: CodeGenerateContext
   ): ExampleOpenAPIParameter[];
-  /**
-   * 生成请求头示例
-   */
+
   abstract generateHeaders(
     headers: OpenAPIParameter[],
     operation: OpenAPIOperation,
     context: CodeGenerateContext
   ): ExampleOpenAPIParameter[];
-  /**
-   * 生成Cookie参数示例
-   */
+
   abstract generateCookies(
     cookies: OpenAPIParameter[],
     operation: OpenAPIOperation,
     context: CodeGenerateContext
   ): ExampleOpenAPIParameter[];
 
-  /**
-   * 生成查询参数示例
-   */
   abstract generateQueryParams(
     parameters: OpenAPIParameter[],
     operation: OpenAPIOperation,
     context: CodeGenerateContext
   ): ExampleOpenAPIParameter[];
 
-  /**
-   * 生成请求体示例
-   */
   abstract generateBody(
     schema: OpenAPISchema | undefined,
     operation: OpenAPIOperation,
     context: CodeGenerateContext
   ): any;
 
-  /**
-   * 生成参数示例值（基础实现）
-   */
-  protected generateParameterExample(param: OpenAPIParameter, context: CodeGenerateContext): ExampleOpenAPIParameter {
-    const value = param.example !== undefined
-      ? param.example
-      : this.generateSchemaExample(param.schema as OpenAPISchema, context);
+  protected generateParameterExample(
+    param: OpenAPIParameter,
+    context: CodeGenerateContext
+  ): ExampleOpenAPIParameter {
+    const exampleFromNamedExamples = param.examples
+      ? Object.values(param.examples).find(
+          (example) => example?.value !== undefined
+        )?.value
+      : undefined;
+    const value =
+      param.example !== undefined
+        ? param.example
+        : exampleFromNamedExamples !== undefined
+        ? exampleFromNamedExamples
+        : this.generateSchemaExample(param.schema as OpenAPISchema, context);
 
     return { ...param, value };
   }
 
-  /**
-   * 根据schema生成示例数据（基础实现）
-   * @param schema 当前需要生成示例的schema
-   * @param context 代码生成上下文，包含完整的OpenAPI文档信息
-   */
-  protected generateSchemaExample(schema: OpenAPISchema, context: CodeGenerateContext): any {
-    // 如果schema有example直接使用
+  protected generateSchemaExample(
+    schema: OpenAPISchema | undefined,
+    context: CodeGenerateContext
+  ): any {
+    if (!schema) {
+      return undefined;
+    }
+
     if (schema.example !== undefined) {
       return schema.example;
     }
 
-    // 处理引用类型
+    if (schema.const !== undefined) {
+      return schema.const;
+    }
+
+    if (schema.default !== undefined) {
+      return schema.default;
+    }
+
+    if (schema.enum && schema.enum.length > 0) {
+      return schema.enum[0];
+    }
+
     if (schema.$ref) {
       return this.resolveRef(schema.$ref, context);
+    }
+
+    if (schema.allOf && schema.allOf.length > 0) {
+      return this.generateAllOfExample(schema.allOf, context);
+    }
+
+    if (schema.anyOf && schema.anyOf.length > 0) {
+      return this.generateSchemaExample(schema.anyOf[0], context);
+    }
+
+    if (schema.oneOf && schema.oneOf.length > 0) {
+      return this.generateSchemaExample(schema.oneOf[0], context);
+    }
+
+    if (schema.type === 'object' || schema.properties) {
+      return this.generateObjectExample(schema, context);
     }
 
     switch (schema.type) {
@@ -88,36 +111,74 @@ export abstract class BaseExampleGenerator implements ExampleGenerator {
         return true;
       case 'array':
         return this.generateArrayExample(schema, context);
-      case 'object':
-        return this.generateObjectExample(schema, context);
+      case 'null':
+        return null;
       default:
         return 'example-value';
     }
   }
 
-  /**
-   * 解析$ref引用
-   */
   private resolveRef(ref: string, context: CodeGenerateContext): any {
-    // 简单实现：从上下文中查找引用的schema
-    const refParts = ref.split('/');
-    const schemaName = refParts[refParts.length - 1];
-    const components = context.openAPISpec?.components;
-    const referencedSchema = components?.schemas?.[schemaName];
+    const resolved = this.resolveDocumentRef(ref, context);
 
-    if (referencedSchema) {
-      return this.generateSchemaExample(referencedSchema, context);
+    if (resolved) {
+      return this.generateSchemaExample(resolved as OpenAPISchema, context);
     }
 
-    // 如果找不到引用，返回占位值
+    const refParts = ref.split('/');
+    const schemaName = refParts[refParts.length - 1];
     return { [schemaName || 'ref']: 'example-ref-value' };
   }
 
-  /**
-   * 生成字符串类型示例
-   */
+  private resolveDocumentRef(
+    ref: string,
+    context: CodeGenerateContext
+  ): unknown {
+    if (!ref.startsWith('#/')) {
+      return undefined;
+    }
+
+    const pathParts = ref
+      .slice(2)
+      .split('/')
+      .map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~'));
+
+    let current: any = context.openAPISpec;
+    for (const part of pathParts) {
+      current = current?.[part];
+      if (current === undefined) {
+        return undefined;
+      }
+    }
+
+    return current;
+  }
+
+  private generateAllOfExample(
+    schemas: OpenAPISchema[],
+    context: CodeGenerateContext
+  ): any {
+    const examples = schemas.map((part) =>
+      this.generateSchemaExample(part, context)
+    );
+
+    if (examples.every((example) => this.isPlainObject(example))) {
+      return Object.assign({}, ...examples);
+    }
+
+    return examples[examples.length - 1];
+  }
+
+  private isPlainObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
   private generateStringExample(schema: OpenAPISchema): string {
     switch (schema.format) {
+      case 'binary':
+        return 'example-file.bin';
+      case 'byte':
+        return 'ZXhhbXBsZS1ieXRlcw==';
       case 'email':
         return 'example@example.com';
       case 'uuid':
@@ -131,34 +192,46 @@ export abstract class BaseExampleGenerator implements ExampleGenerator {
     }
   }
 
-  /**
-   * 生成数字类型示例
-   */
   private generateNumberExample(schema: OpenAPISchema): number {
-    return schema.minimum !== undefined ? schema.minimum : 123;
+    if (schema.minimum !== undefined) {
+      return schema.minimum;
+    }
+
+    return 123;
   }
 
-  /**
-   * 生成数组类型示例
-   */
-  private generateArrayExample(schema: OpenAPISchema, context: CodeGenerateContext): any[] {
-    const items = this.generateSchemaExample(schema.items as OpenAPISchema, context);
-    // 生成包含1-3个元素的数组
-    return Array(Math.floor(Math.random() * 3) + 1).fill(items);
+  private generateArrayExample(
+    schema: OpenAPISchema,
+    context: CodeGenerateContext
+  ): any[] {
+    const count =
+      schema.minItems && schema.minItems > 0 ? Math.min(schema.minItems, 3) : 1;
+
+    return Array.from({ length: count }, () =>
+      this.generateSchemaExample(schema.items as OpenAPISchema, context)
+    );
   }
 
-  /**
-   * 生成对象类型示例
-   */
-  private generateObjectExample(schema: OpenAPISchema, context: CodeGenerateContext): Record<string, any> {
-    if (!schema.properties) return {};
+  private generateObjectExample(
+    schema: OpenAPISchema,
+    context: CodeGenerateContext
+  ): Record<string, any> {
+    if (!schema.properties) {
+      return {};
+    }
 
     const obj: Record<string, any> = {};
     for (const [key, propSchema] of Object.entries(schema.properties)) {
-      // 跳过只读属性
-      if ((propSchema as OpenAPISchema).readOnly) continue;
-      obj[key] = this.generateSchemaExample(propSchema as OpenAPISchema, context);
+      if ((propSchema as OpenAPISchema).readOnly) {
+        continue;
+      }
+
+      obj[key] = this.generateSchemaExample(
+        propSchema as OpenAPISchema,
+        context
+      );
     }
+
     return obj;
   }
 }

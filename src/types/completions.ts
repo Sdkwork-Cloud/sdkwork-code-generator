@@ -92,12 +92,15 @@ export interface CompletionsRequest {
   /**
    * 工具调用配置
    */
-  tool_choice?: 'none' | 'auto' | {
-    type: 'function';
-    function: {
-      name: string;
-    };
-  };
+  tool_choice?:
+    | 'none'
+    | 'auto'
+    | {
+        type: 'function';
+        function: {
+          name: string;
+        };
+      };
 
   /**
    * 工具定义
@@ -620,4 +623,3 @@ export interface CompletionsMetrics {
     outputTokens: number;
   };
 }
-

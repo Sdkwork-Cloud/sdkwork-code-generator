@@ -5,7 +5,7 @@
 
 export * from './mcp';
 export * from './openapi';
-export * from './code'; 
+export * from './code';
 export * from './sdk';
 export * from './context';
 export * from './prompts';
@@ -38,7 +38,6 @@ export interface PaginationResult<T> {
   /** 总页数 */
   totalPages: number;
 }
-
 
 export interface ErrorResponse {
   /** 错误代码 */

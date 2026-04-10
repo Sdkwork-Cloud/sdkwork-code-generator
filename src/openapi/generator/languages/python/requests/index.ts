@@ -1,40 +1,21 @@
 import { BaseRequestCodeGenerator } from '@/openapi/generator/generator';
-import { Language, HttpMethod, OpenAPIOperation, ExampleOpenAPIParameter, CodeGenerateContext } from '@/types';
+import {
+  CodeGenerateContext,
+  ExampleOpenAPIParameter,
+  HttpMethod,
+  Language,
+  OpenAPIOperation,
+} from '@/types';
 
-/**
- * Python Requests HTTP请求代码生成器
- */
 export class RequestsPythonRequestCodeGenerator extends BaseRequestCodeGenerator {
-  
-  /**
-   * 获取目标编程语言
-   * @returns 编程语言标识符
-   */
   getLanguage(): Language {
     return 'python';
   }
 
-  /**
-   * 获取使用的HTTP库名称
-   * @returns HTTP库名称
-   */
   getLibrary(): string {
     return 'requests';
   }
 
-  /**
-   * 生成具体的HTTP请求代码
-   * @param path - 完整的请求Path
-   * @param method - 请求方法
-   * @param baseUrl - baseUrl
-   * @param operation - OpenAPI操作定义
-   * @param pathVariables - 路径参数示例数据
-   * @param headers - 请求头示例数据
-   * @param queryParams - 查询参数示例数据
-   * @param requestBody - 请求体示例数据
-   * @param context - 代码生成上下文
-   * @returns 生成的代码字符串
-   */
   generateCode(
     path: string,
     method: HttpMethod,
@@ -46,113 +27,179 @@ export class RequestsPythonRequestCodeGenerator extends BaseRequestCodeGenerator
     requestBody: any,
     context: CodeGenerateContext
   ): string {
-    // 构建请求参数
-    const requestParams = this.buildRequestParams(method, cookies, headers, queryParams, requestBody);
-    
-    // 生成完整的Python请求代码
-    return this.generatePythonRequestCode(baseUrl, path, requestParams, operation, method);
+    if (this.isMultipartRequestBody(context)) {
+      return this.generateMultipartPythonRequestCode(
+        baseUrl,
+        path,
+        method,
+        cookies,
+        headers,
+        queryParams,
+        requestBody,
+        operation,
+        context
+      );
+    }
+
+    const requestParams = this.buildRequestParams(
+      method,
+      cookies,
+      headers,
+      queryParams,
+      requestBody,
+      context
+    );
+    const requestBodySetup = this.buildBinaryRequestBodySetup(
+      method,
+      requestBody,
+      context
+    );
+    const querySetup = this.buildAllowReservedQuerySetup(queryParams);
+
+    return this.generatePythonRequestCode(
+      baseUrl,
+      path,
+      requestParams,
+      operation,
+      method,
+      context,
+      `${querySetup}${requestBodySetup}`
+    );
   }
 
-  /**
-   * 构建请求参数
-   */
   private buildRequestParams(
     method: HttpMethod,
     cookies: ExampleOpenAPIParameter[],
     headers: ExampleOpenAPIParameter[],
     queryParams: ExampleOpenAPIParameter[],
-    requestBody: any
+    requestBody: any,
+    context: CodeGenerateContext
   ): string {
     const params: string[] = [];
+    const requestHeaders = [...headers];
+    const cookieHeader = this.buildCookieHeaderParameter(cookies);
+    const hasRequestBody = this.hasRequestBody(method, requestBody);
 
-    // 添加cookies
-    if (cookies.length > 0) {
-      const cookiesDict = this.buildCookiesDict(cookies);
-      params.push(`cookies=${cookiesDict}`);
+    if (cookieHeader) {
+      requestHeaders.push(cookieHeader);
     }
 
-    // 添加请求头
-    if (headers.length > 0) {
-      const headersDict = this.buildHeadersDict(headers);
-      params.push(`headers=${headersDict}`);
+    if (
+      hasRequestBody &&
+      this.shouldAutoAddContentTypeHeader(context) &&
+      !requestHeaders.some(
+        (header) => header.name.toLowerCase() === 'content-type'
+      )
+    ) {
+      requestHeaders.push({
+        name: 'Content-Type',
+        in: 'header',
+        required: false,
+        schema: { type: 'string' },
+        value: context.requestContentType,
+      });
     }
 
-    // 添加查询参数
-    if (queryParams.length > 0) {
-      const paramsDict = this.buildParamsDict(queryParams);
-      params.push(`params=${paramsDict}`);
+    if (requestHeaders.length > 0) {
+      params.push(`headers=${this.buildHeadersDict(requestHeaders)}`);
     }
 
-    // 添加请求体（对于POST、PUT、PATCH方法）
-    if (['POST', 'PUT', 'PATCH'].includes(method) && requestBody) {
-      params.push(`json=${JSON.stringify(requestBody, null, 2)}`);
+    if (
+      queryParams.length > 0 &&
+      !this.hasAllowReservedQueryParameters(queryParams)
+    ) {
+      params.push(`params=${this.buildParamsList(queryParams)}`);
+    }
+
+    if (hasRequestBody) {
+      if (this.isBinaryRequestBody(context)) {
+        params.push('data=requestBody');
+      } else if (this.usesStringRequestBody(context)) {
+        params.push(
+          `data='${this.escapeSingleQuoted(
+            this.serializeStringRequestBody(requestBody, context)
+          )}'`
+        );
+      } else {
+        params.push(`json=${this.toPythonLiteral(requestBody, 4)}`);
+      }
     }
 
     return params.join(', ');
   }
 
-  /**
-   * 构建请求头字典
-   */
   private buildHeadersDict(headers: ExampleOpenAPIParameter[]): string {
-    const headerEntries = headers.map(header => 
-      `'${header.name}': '${header.value}'`
+    const headerEntries = headers.map(
+      (header) =>
+        `'${this.escapeSingleQuoted(header.name)}': '${this.escapeSingleQuoted(
+          this.serializeHeaderParameterValue(header)
+        )}'`
     );
+
     return `{${headerEntries.join(', ')}}`;
   }
 
-  /**
-   * 构建查询参数字典
-   */
-  private buildParamsDict(queryParams: ExampleOpenAPIParameter[]): string {
-    const paramEntries = queryParams.map(param => 
-      `'${param.name}': '${param.value}'`
+  private buildParamsList(queryParams: ExampleOpenAPIParameter[]): string {
+    const paramEntries = this.buildQueryParameterEntries(queryParams).map(
+      (param) =>
+        `('${this.escapeSingleQuoted(param.name)}', '${this.escapeSingleQuoted(
+          param.value
+        )}')`
     );
-    return `{${paramEntries.join(', ')}}`;
+
+    return `[${paramEntries.join(', ')}]`;
   }
 
-  /**
-   * 构建cookies字典
-   */
-  private buildCookiesDict(cookies: ExampleOpenAPIParameter[]): string {
-    const cookieEntries = cookies.map(cookie => 
-      `'${cookie.name}': '${cookie.value}'`
-    );
-    return `{${cookieEntries.join(', ')}}`;
+  private buildAllowReservedQuerySetup(
+    queryParams: ExampleOpenAPIParameter[]
+  ): string {
+    if (!this.hasAllowReservedQueryParameters(queryParams)) {
+      return '';
+    }
+
+    return `    url += ('?' if '?' not in url else '&') + '${this.escapeSingleQuoted(
+      this.buildSerializedQueryString(queryParams)
+    )}'\n`;
   }
 
-  /**
-   * 生成完整的Python请求代码
-   */
   private generatePythonRequestCode(
     baseUrl: string,
     path: string,
     requestParams: string,
     operation: OpenAPIOperation,
-    method: HttpMethod
+    method: HttpMethod,
+    context: CodeGenerateContext,
+    requestBodySetup = ''
   ): string {
-    const url = `${baseUrl}${path}`;
-    const operationId = operation.operationId || 'api_request';
+    const url = this.escapeDoubleQuotedString(
+      this.buildRequestUrl(baseUrl, path)
+    );
+    const operationId = this.toIdentifier(
+      operation.operationId,
+      'api_request',
+      'snake'
+    );
     const methodLower = method.toLowerCase();
-    
+
     return `import requests
 import json
 
 def ${operationId}():
-    \"\"\"
-    ${operation.summary || operation.description || 'API请求'}
-    ${operation.description ? '    ' + operation.description : ''}
-    \"\"\"
+    """
+    ${operation.summary || operation.description || 'API request'}
+    ${operation.description ? `    ${operation.description}` : ''}
+    """
     url = "${url}"
-    
+${requestBodySetup}
+
     try:
-        response = requests.${methodLower}(url${requestParams ? ', ' + requestParams : ''})
-        response.raise_for_status()
-        
+        response = requests.${methodLower}(url${
+      requestParams ? ', ' + requestParams : ''
+    })
+${this.buildSuccessStatusCheckCode(context)}
+
         print("Status Code: " + str(response.status_code))
-        print("Response: " + response.text)
-        
-        return response.json()
+${this.buildResponseHandlingCode(context)}
     except requests.exceptions.RequestException as e:
         print("Error: " + str(e))
         raise e
@@ -160,5 +207,158 @@ def ${operationId}():
 if __name__ == "__main__":
     result = ${operationId}()
     print(result)`;
+  }
+
+  private buildBinaryRequestBodySetup(
+    method: HttpMethod,
+    requestBody: any,
+    context: CodeGenerateContext
+  ): string {
+    if (
+      !this.hasRequestBody(method, requestBody) ||
+      !this.isBinaryRequestBody(context)
+    ) {
+      return '';
+    }
+
+    return `    with open('${this.escapeSingleQuoted(
+      this.getBinaryRequestBodyFileName(requestBody)
+    )}', 'rb') as requestBodyFile:
+        requestBody = requestBodyFile.read()
+`;
+  }
+
+  private generateMultipartPythonRequestCode(
+    baseUrl: string,
+    path: string,
+    method: HttpMethod,
+    cookies: ExampleOpenAPIParameter[],
+    headers: ExampleOpenAPIParameter[],
+    queryParams: ExampleOpenAPIParameter[],
+    requestBody: any,
+    operation: OpenAPIOperation,
+    context: CodeGenerateContext
+  ): string {
+    const url = this.escapeDoubleQuotedString(
+      this.buildRequestUrl(baseUrl, path)
+    );
+    const operationId = this.toIdentifier(
+      operation.operationId,
+      'api_request',
+      'snake'
+    );
+    const methodLower = method.toLowerCase();
+    const fieldParts = this.getMultipartFieldParts(requestBody);
+    const fileParts = this.getMultipartFileParts(requestBody);
+    const requestHeaders = [...headers];
+    const cookieHeader = this.buildCookieHeaderParameter(cookies);
+    if (cookieHeader) {
+      requestHeaders.push(cookieHeader);
+    }
+    const headerCode = this.buildHeadersDict(requestHeaders);
+    const querySetup = this.buildAllowReservedQuerySetup(queryParams);
+    const paramsCode =
+      queryParams.length > 0 &&
+      !this.hasAllowReservedQueryParameters(queryParams)
+        ? `    params = ${this.buildParamsList(queryParams)}\n`
+        : '';
+    const requestArgs = [
+      'headers=headers',
+      'data=data',
+      'files=files',
+      queryParams.length > 0 &&
+      !this.hasAllowReservedQueryParameters(queryParams)
+        ? 'params=params'
+        : '',
+    ]
+      .filter(Boolean)
+      .join(', ');
+
+    return `import requests
+
+def ${operationId}():
+    """
+    ${operation.summary || operation.description || 'API request'}
+    ${operation.description ? `    ${operation.description}` : ''}
+    """
+    url = "${url}"
+    headers = ${headerCode}
+${querySetup}${paramsCode}    data = {${fieldParts
+      .map(
+        (part) =>
+          `'${this.escapeSingleQuoted(part.name)}': '${this.escapeSingleQuoted(
+            String(part.value)
+          )}'`
+      )
+      .join(', ')}}
+    files = {${fileParts
+      .map(
+        (part) =>
+          `'${this.escapeSingleQuoted(part.name)}': ('${this.escapeSingleQuoted(
+            part.filename || part.name
+          )}', open('${this.escapeSingleQuoted(
+            part.filename || part.name
+          )}', 'rb'), '${this.escapeSingleQuoted(
+            part.contentType || 'application/octet-stream'
+          )}')`
+      )
+      .join(', ')}}
+
+    try:
+        response = requests.${methodLower}(url, ${requestArgs})
+${this.buildSuccessStatusCheckCode(context)}
+
+        print("Status Code: " + str(response.status_code))
+        print("Response: " + response.text)
+
+${this.buildResponseHandlingCode(context)}
+    except requests.exceptions.RequestException as e:
+        print("Error: " + str(e))
+        raise e
+
+if __name__ == "__main__":
+    result = ${operationId}()
+    print(result)`;
+  }
+
+  private hasRequestBody(method: HttpMethod, requestBody: any): boolean {
+    return this.hasRequestBodyValue(method, requestBody);
+  }
+
+  private escapeSingleQuoted(value: string): string {
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/'/g, "\\'")
+      .replace(/\r?\n/g, '\\n');
+  }
+
+  private buildResponseHandlingCode(context: CodeGenerateContext): string {
+    if (this.isBinaryResponse(context)) {
+      return `        data = response.content
+        print("Response bytes: " + str(len(data)))
+        return data`;
+    }
+
+    if (this.usesStringResponse(context)) {
+      return `        data = response.text
+        print("Response: " + data)
+        return data`;
+    }
+
+    return `        data = response.json()
+        print("Response: " + str(data))
+        return data`;
+  }
+
+  private buildSuccessStatusCheckCode(context: CodeGenerateContext): string {
+    if (this.usesAny2xxSuccessStatus(context)) {
+      return `        if response.status_code < 200 or response.status_code >= 300:
+            raise requests.exceptions.HTTPError(f"HTTP error! status: {response.status_code}")`;
+    }
+
+    return `        if response.status_code != ${this.getExpectedSuccessStatusCode(
+      context
+    )}:
+            raise requests.exceptions.HTTPError(f"HTTP error! status: {response.status_code}")`;
   }
 }

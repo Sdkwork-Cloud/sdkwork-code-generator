@@ -49,7 +49,28 @@ describe('Go net/http Generator', () => {
     );
 
     expect(code).toContain('"POST"');
-    expect(code).toContain('json.Marshal');
+    expect(code).toContain('strings.NewReader(`{');
+  });
+
+  test('should generate plain text POST bodies without JSON marshaling', () => {
+    const code = generator.generateCode(
+      BASE_TEST_CONFIG.path,
+      'POST',
+      BASE_TEST_CONFIG.baseUrl,
+      POST_TEST_OPERATION,
+      [],
+      [],
+      [],
+      'hello world',
+      {
+        ...BASE_TEST_CONFIG.context,
+        requestContentType: 'text/plain',
+      }
+    );
+
+    expect(code).toContain('strings.NewReader(`hello world`)');
+    expect(code).toContain('req.Header.Set("Content-Type", "text/plain")');
+    expect(code).not.toContain('json.Marshal');
   });
 
   test('should handle path variables correctly', () => {

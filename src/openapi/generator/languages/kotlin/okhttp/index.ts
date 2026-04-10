@@ -1,40 +1,21 @@
 import { BaseRequestCodeGenerator } from '@/openapi/generator/generator';
-import { Language, HttpMethod, OpenAPIOperation, ExampleOpenAPIParameter, CodeGenerateContext } from '@/types';
+import {
+  CodeGenerateContext,
+  ExampleOpenAPIParameter,
+  HttpMethod,
+  Language,
+  OpenAPIOperation,
+} from '@/types';
 
-/**
- * Kotlin OkHttp HTTP请求代码生成器
- */
 export class OkHttpKotlinRequestCodeGenerator extends BaseRequestCodeGenerator {
-  
-  /**
-   * 获取目标编程语言
-   * @returns 编程语言标识符
-   */
   getLanguage(): Language {
     return 'kotlin';
   }
 
-  /**
-   * 获取使用的HTTP库名称
-   * @returns HTTP库名称
-   */
   getLibrary(): string {
     return 'okhttp';
   }
 
-  /**
-   * 生成具体的HTTP请求代码
-   * @param path - 完整的请求Path
-   * @param method - 请求方法
-   * @param baseUrl - baseUrl
-   * @param operation - OpenAPI操作定义
-   * @param cookies - cookies示例数据
-   * @param headers - 请求头示例数据
-   * @param queryParams - 查询参数示例数据
-   * @param requestBody - 请求体示例数据
-   * @param context - 代码生成上下文
-   * @returns 生成的代码字符串
-   */
   generateCode(
     path: string,
     method: HttpMethod,
@@ -46,26 +27,50 @@ export class OkHttpKotlinRequestCodeGenerator extends BaseRequestCodeGenerator {
     requestBody: any,
     context: CodeGenerateContext
   ): string {
-    const operationId = operation.operationId || 'apiRequest';
-    const url = `${baseUrl}${path}`;
-    
-    // 构建请求参数
-    const requestCode = this.buildKotlinRequestCode(method, cookies, headers, queryParams, requestBody, url, operationId);
-    
-    return `import okhttp3.*
+    const operationId = this.toIdentifier(
+      operation.operationId,
+      'apiRequest',
+      'camel'
+    );
+    const usesSerializedQueryString =
+      this.hasAllowReservedQueryParameters(queryParams);
+    const queryEncodingImports =
+      queryParams.length > 0 && !usesSerializedQueryString
+        ? 'import java.net.URLEncoder\nimport java.nio.charset.StandardCharsets\n'
+        : '';
+    const expectedSuccessStatusCode =
+      this.getExpectedSuccessStatusCode(context);
+    const successStatusCheck = this.usesAny2xxSuccessStatus(context)
+      ? 'response.code < 200 || response.code >= 300'
+      : `response.code != ${expectedSuccessStatusCode}`;
+    const responseHandlingCode = this.isBinaryResponse(context)
+      ? `val data = response.body?.bytes() ?: ByteArray(0)
+        println("Response bytes: \${data.size}")`
+      : `println("Response: \${response.body?.string()}")`;
+
+    return `import java.io.File
+${queryEncodingImports}import okhttp3.*
 import java.io.IOException
 
-// ${operation.summary || operation.description || 'API请求'}
+// ${operation.summary || operation.description || 'API request'}
 fun ${operationId}() {
     val client = OkHttpClient()
-    
-    ${requestCode}
-    
+
+    ${this.buildKotlinRequestCode(
+      method,
+      cookies,
+      headers,
+      queryParams,
+      requestBody,
+      this.escapeDoubleQuotedString(this.buildRequestUrl(baseUrl, path)),
+      context
+    )}
+
     client.newCall(request).execute().use { response ->
-        if (!response.isSuccessful) throw IOException("Unexpected code \$response")
-        
+        if (${successStatusCheck}) throw IOException("Unexpected code $response")
+
         println("Status: \${response.code}")
-        println("Response: \${response.body?.string()}")
+        ${responseHandlingCode}
     }
 }
 
@@ -74,9 +79,6 @@ fun main() {
 }`;
   }
 
-  /**
-   * 构建Kotlin请求代码
-   */
   private buildKotlinRequestCode(
     method: HttpMethod,
     cookies: ExampleOpenAPIParameter[],
@@ -84,63 +86,171 @@ fun main() {
     queryParams: ExampleOpenAPIParameter[],
     requestBody: any,
     url: string,
-    operationId: string
+    context: CodeGenerateContext
   ): string {
-    // 构建URL
-    let urlCode = `val url = "${url}"`;
-    
-    // 构建查询参数
-    if (queryParams.length > 0) {
-      const paramEntries = queryParams.map(param => 
-        `url += "?${param.name}=\${param.value}"`
+    let urlCode = `var url = "${url}"`;
+
+    if (this.hasAllowReservedQueryParameters(queryParams)) {
+      const serializedQuery = this.escapeDoubleQuoted(
+        this.buildSerializedQueryString(queryParams)
       );
-      urlCode += `\n    ${paramEntries.join('\n    ')}`;
+
+      return `${urlCode}
+    url += (if (url.contains("?")) "&" else "?") + "${serializedQuery}"
+    ${
+      this.buildRequestBodyCode(method, requestBody, context)
+        ? `${this.buildRequestBodyCode(method, requestBody, context)}\n    `
+        : ''
+    }val request = Request.Builder()
+        .url(url)
+${this.buildHeaderLines(cookies, headers)}
+        ${
+          this.hasRequestBody(method, requestBody)
+            ? `.${method.toLowerCase()}(requestBody)`
+            : `.${method.toLowerCase()}()`
+        }
+        .build()`;
     }
-    
-    // 构建请求体
-    let bodyCode = '';
-    if (['POST', 'PUT', 'PATCH'].includes(method) && requestBody) {
-      const jsonBody = JSON.stringify(requestBody, null, 2);
-      bodyCode = `val requestBody = RequestBody.create(
-        MediaType.parse("application/json"), 
-        """${jsonBody}""".trimIndent()
+
+    const paramEntries = this.buildQueryParameterEntries(queryParams);
+
+    if (paramEntries.length > 0) {
+      urlCode += `\n    ${paramEntries
+        .map(
+          (param, index) =>
+            `url += "${index === 0 ? '?' : '&'}${this.escapeDoubleQuoted(
+              param.name
+            )}=" + URLEncoder.encode("${this.escapeDoubleQuoted(
+              param.value
+            )}", StandardCharsets.UTF_8.toString())`
+        )
+        .join('\n    ')}`;
+    }
+
+    const requestBodyCode = this.buildRequestBodyCode(
+      method,
+      requestBody,
+      context
+    );
+    const headerLines = this.buildHeaderLines(cookies, headers);
+    const requestMethod = this.hasRequestBody(method, requestBody)
+      ? `.${method.toLowerCase()}(requestBody)`
+      : `.${method.toLowerCase()}()`;
+
+    return `${urlCode}
+    ${
+      requestBodyCode ? `${requestBodyCode}\n    ` : ''
+    }val request = Request.Builder()
+        .url(url)
+${headerLines}
+        ${requestMethod}
+        .build()`;
+  }
+
+  private buildRequestBodyCode(
+    method: HttpMethod,
+    requestBody: any,
+    context: CodeGenerateContext
+  ): string {
+    if (!this.hasRequestBody(method, requestBody)) {
+      return '';
+    }
+
+    if (this.isBinaryRequestBody(context)) {
+      const contentType =
+        context.requestContentType || 'application/octet-stream';
+      return `val requestBody = RequestBody.create(
+        MediaType.parse("${contentType}"),
+        File("${this.escapeDoubleQuoted(
+          this.getBinaryRequestBodyFileName(requestBody)
+        )}").readBytes()
     )`;
     }
-    
-    // 构建cookies
-    let cookiesCode = '';
+
+    if (this.usesStringRequestBody(context)) {
+      const contentType = context.requestContentType || 'text/plain';
+      return `val requestBody = RequestBody.create(
+        MediaType.parse("${contentType}"),
+        "${this.escapeDoubleQuoted(
+          this.serializeStringRequestBody(requestBody, context)
+        )}"
+    )`;
+    }
+
+    if (this.isMultipartRequestBody(context)) {
+      return this.buildMultipartRequestBodyCode(requestBody);
+    }
+
+    const contentType = context.requestContentType || 'application/json';
+    return `val requestBody = RequestBody.create(
+        MediaType.parse("${contentType}"),
+        """${JSON.stringify(requestBody, null, 2)}""".trimIndent()
+    )`;
+  }
+
+  private buildMultipartRequestBodyCode(requestBody: any): string {
+    const fieldLines = this.getMultipartFieldParts(requestBody).map(
+      (part) =>
+        `        .addFormDataPart("${this.escapeDoubleQuoted(
+          part.name
+        )}", "${this.escapeDoubleQuoted(part.value)}")`
+    );
+    const filePart = this.getMultipartFileParts(requestBody)[0];
+    const fileLines = filePart
+      ? [
+          `        .addFormDataPart("${this.escapeDoubleQuoted(
+            filePart.name
+          )}", "${this.escapeDoubleQuoted(
+            filePart.filename || filePart.name
+          )}", RequestBody.create(MediaType.parse("${this.escapeDoubleQuoted(
+            filePart.contentType || 'application/octet-stream'
+          )}"), "${this.escapeDoubleQuoted(filePart.value)}"))`,
+        ]
+      : [];
+
+    return `val requestBody = MultipartBody.Builder()
+        .setType(MultipartBody.FORM)
+${[...fieldLines, ...fileLines].join('\n')}
+        .build()`;
+  }
+
+  private buildHeaderLines(
+    cookies: ExampleOpenAPIParameter[],
+    headers: ExampleOpenAPIParameter[]
+  ): string {
+    const lines: string[] = [];
+
+    headers.forEach((header) => {
+      lines.push(
+        `        .addHeader("${header.name}", "${this.escapeDoubleQuoted(
+          this.serializeHeaderParameterValue(header)
+        )}")`
+      );
+    });
+
     if (cookies.length > 0) {
-      const cookieEntries = cookies.map(cookie => 
-        `"${cookie.name}=${cookie.value}"`
+      lines.push(
+        `        .addHeader("Cookie", "${this.escapeDoubleQuoted(
+          this.buildCookieHeaderValue(cookies)
+        )}")`
       );
-      cookiesCode = `.addHeader("Cookie", "${cookieEntries.join('; ')}")`;
     }
-    
-    // 构建请求头
-    let headersCode = '';
-    if (headers.length > 0 || cookies.length > 0) {
-      const headerBuilder = headers.map(header => 
-        `.addHeader("${header.name}", "${header.value}")`
-      );
-      
-      if (cookiesCode) {
-        headerBuilder.push(cookiesCode);
-      }
-      
-      headersCode = `val request = Request.Builder()
-        .url(url)
-        .${method.toLowerCase()}(${bodyCode ? 'requestBody' : ''})
-        ${headerBuilder.join('\n        ')}
-        .build()`;
-    } else {
-      headersCode = `val request = Request.Builder()
-        .url(url)
-        .${method.toLowerCase()}(${bodyCode ? 'requestBody' : ''})
-        .build()`;
-    }
-    
-    return `${urlCode}
-    ${bodyCode ? bodyCode + '\n    ' : ''}
-    ${headersCode}`;
+
+    return lines.join('\n');
+  }
+
+  private hasRequestBody(method: HttpMethod, requestBody: any): boolean {
+    return (
+      ['POST', 'PUT', 'PATCH'].includes(method) &&
+      requestBody !== undefined &&
+      requestBody !== null
+    );
+  }
+
+  private escapeDoubleQuoted(value: string): string {
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\r?\n/g, '\\n');
   }
 }

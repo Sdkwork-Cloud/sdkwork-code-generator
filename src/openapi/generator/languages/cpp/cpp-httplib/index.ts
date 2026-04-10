@@ -1,40 +1,21 @@
 import { BaseRequestCodeGenerator } from '@/openapi/generator/generator';
-import { Language, HttpMethod, OpenAPIOperation, ExampleOpenAPIParameter, CodeGenerateContext } from '@/types';
+import {
+  CodeGenerateContext,
+  ExampleOpenAPIParameter,
+  HttpMethod,
+  Language,
+  OpenAPIOperation,
+} from '@/types';
 
-/**
- * C++ cpp-httplib HTTP请求代码生成器
- */
 export class CppHttplibCppRequestCodeGenerator extends BaseRequestCodeGenerator {
-  
-  /**
-   * 获取目标编程语言
-   * @returns 编程语言标识符
-   */
   getLanguage(): Language {
     return 'cpp';
   }
 
-  /**
-   * 获取使用的HTTP库名称
-   * @returns HTTP库名称
-   */
   getLibrary(): string {
     return 'cpp-httplib';
   }
 
-  /**
-   * 生成具体的HTTP请求代码
-   * @param path - 完整的请求Path
-   * @param method - 请求方法
-   * @param baseUrl - baseUrl
-   * @param operation - OpenAPI操作定义
-   * @param cookies - cookies示例数据
-   * @param headers - 请求头示例数据
-   * @param queryParams - 查询参数示例数据
-   * @param requestBody - 请求体示例数据
-   * @param context - 代码生成上下文
-   * @returns 生成的代码字符串
-   */
   generateCode(
     path: string,
     method: HttpMethod,
@@ -46,98 +27,277 @@ export class CppHttplibCppRequestCodeGenerator extends BaseRequestCodeGenerator 
     requestBody: any,
     context: CodeGenerateContext
   ): string {
-    const operationId = operation.operationId || 'api_request';
-    const url = `${baseUrl}${path}`;
-    
+    const expectedSuccessStatusCode =
+      this.getExpectedSuccessStatusCode(context);
+    const successStatusCheck = this.usesAny2xxSuccessStatus(context)
+      ? 'response->status < 200 || response->status >= 300'
+      : `response->status != ${expectedSuccessStatusCode}`;
+    const binaryHelper = this.isBinaryRequestBody(context)
+      ? `
+std::string readBinaryFile(const std::string& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        throw std::runtime_error("Failed to open binary file");
+    }
+
+    return std::string(
+        (std::istreambuf_iterator<char>(file)),
+        std::istreambuf_iterator<char>()
+    );
+}
+`
+      : '';
+    const queryEncodingHelper =
+      queryParams.length > 0 &&
+      !this.hasAllowReservedQueryParameters(queryParams)
+        ? `
+std::string urlEncode(const std::string& value) {
+    static const char* hex = "0123456789ABCDEF";
+    std::string encoded;
+    encoded.reserve(value.size() * 3);
+
+    for (unsigned char ch : value) {
+        if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+            (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' ||
+            ch == '.' || ch == '~') {
+            encoded += static_cast<char>(ch);
+        } else {
+            encoded += '%';
+            encoded += hex[ch >> 4];
+            encoded += hex[ch & 0x0F];
+        }
+    }
+
+    return encoded;
+}
+`
+        : '';
+    const responseHandlingCode = this.isBinaryResponse(context)
+      ? `std::string data = response->body;
+    std::cout << "Response bytes: " << data.size() << std::endl;`
+      : this.usesStringResponse(context)
+      ? `std::string data = response->body;
+    std::cout << "Response: " << data << std::endl;`
+      : `auto data = json::parse(response->body);
+    std::cout << "Response: " << data.dump(4) << std::endl;`;
+    const serverUrl = this.parseServerUrl(baseUrl);
+    const requestBaseUrl = this.escapeDoubleQuotedString(serverUrl.origin);
+    const requestPath = this.escapeDoubleQuotedString(
+      this.combineServerPath(baseUrl, path)
+    );
+
     return `#include <iostream>
+#include <fstream>
+#include <iterator>
+#include <stdexcept>
 #include <string>
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
+${binaryHelper}
+${queryEncodingHelper}
 
 /*
-${operation.summary || operation.description || 'API请求'}
+${operation.summary || operation.description || 'API request'}
 ${operation.description ? ` * ${operation.description}` : ''}
 */
 
 int main() {
-    std::string url = "${url}";
+    std::string path = "${requestPath}";
     ${this.buildQueryParamsCode(queryParams)}
-    
-    httplib::Client cli("${baseUrl}");
-    
+
+    httplib::Client cli("${requestBaseUrl}");
+
+    ${this.buildHeadersCode(headers, method, requestBody, context)}
     ${this.buildCookiesCode(cookies)}
-    ${this.buildHeadersCode(headers)}
-    ${this.buildRequestBodyCode(method, requestBody)}
-    
-    auto response = cli.${method.toLowerCase()}("${path}");
-    
-    if (response->status != 200) {
+    ${this.buildRequestBodyCode(method, requestBody, context)}
+
+    ${this.buildRequestExecutionCode(method, requestBody, context)}
+
+    if (!response) {
+        std::cerr << "HTTP request failed" << std::endl;
+        return 1;
+    }
+
+    if (${successStatusCheck}) {
         std::cerr << "HTTP error! status: " << response->status << std::endl;
         return 1;
     }
-    
-    auto data = json::parse(response->body);
-    std::cout << "Response: " << data.dump(4) << std::endl;
-    
+
+    ${responseHandlingCode}
+
     return 0;
 }`;
   }
 
-  /**
-   * 构建cookies代码
-   */
   private buildCookiesCode(cookies: ExampleOpenAPIParameter[]): string {
     if (cookies.length === 0) {
       return '';
     }
-    
-    const cookieEntries = cookies.map(cookie => 
-      `"${cookie.name}=${cookie.value}"`
-    );
-    
-    return `httplib::Cookies cookies = {\n        ${cookieEntries.join(',\n        ')}\n    };`;
+
+    const cookieHeader = this.buildCookieHeaderValue(cookies);
+
+    return `headers.emplace("Cookie", "${this.escapeDoubleQuoted(
+      cookieHeader
+    )}");`;
   }
 
-  /**
-   * 构建查询参数代码
-   */
   private buildQueryParamsCode(queryParams: ExampleOpenAPIParameter[]): string {
-    if (queryParams.length === 0) {
+    if (this.hasAllowReservedQueryParameters(queryParams)) {
+      return `path += (path.find('?') != std::string::npos ? "&" : "?") + "${this.escapeDoubleQuoted(
+        this.buildSerializedQueryString(queryParams)
+      )}";`;
+    }
+
+    const paramEntries = this.buildQueryParameterEntries(queryParams);
+
+    if (paramEntries.length === 0) {
       return '';
     }
-    
-    const paramEntries = queryParams.map(param => 
-      `url += (url.find('?') != std::string::npos ? "&" : "?") + "${param.name}=" + "${param.value}";`
-    );
-    
-    return paramEntries.join('\n    ');
+
+    return paramEntries
+      .map(
+        (param) =>
+          `path += (path.find('?') != std::string::npos ? "&" : "?") + "${this.escapeDoubleQuoted(
+            param.name
+          )}=" + urlEncode("${this.escapeDoubleQuoted(String(param.value))}");`
+      )
+      .join('\n    ');
   }
 
-  /**
-   * 构建请求头代码
-   */
-  private buildHeadersCode(headers: ExampleOpenAPIParameter[]): string {
-    if (headers.length === 0) {
-      return 'httplib::Headers headers = {{"Content-Type", "application/json"}};';
+  private buildHeadersCode(
+    headers: ExampleOpenAPIParameter[],
+    method: HttpMethod,
+    requestBody: any,
+    context: CodeGenerateContext
+  ): string {
+    const requestHeaders = [...headers];
+
+    if (
+      this.hasRequestBody(method, requestBody) &&
+      this.shouldAutoAddContentTypeHeader(context) &&
+      !requestHeaders.some(
+        (header) => header.name.toLowerCase() === 'content-type'
+      )
+    ) {
+      requestHeaders.push({
+        name: 'Content-Type',
+        in: 'header',
+        required: false,
+        schema: { type: 'string' },
+        value: context.requestContentType,
+      });
     }
-    
-    const headerEntries = headers.map(header => 
-      `{"${header.name}", "${header.value}"}`
+
+    if (requestHeaders.length === 0) {
+      return 'httplib::Headers headers;';
+    }
+
+    const headerEntries = requestHeaders.map(
+      (header) =>
+        `{"${header.name}", "${this.escapeDoubleQuoted(
+          this.serializeHeaderParameterValue(header)
+        )}"}`
     );
-    
-    return `httplib::Headers headers = {\n        ${headerEntries.join(',\n        ')}\n    };`;
+
+    return `httplib::Headers headers = {\n        ${headerEntries.join(
+      ',\n        '
+    )}\n    };`;
   }
 
-  /**
-   * 构建请求体代码
-   */
-  private buildRequestBodyCode(method: HttpMethod, requestBody: any): string {
-    if (!['POST', 'PUT', 'PATCH'].includes(method) || !requestBody) {
+  private buildRequestBodyCode(
+    method: HttpMethod,
+    requestBody: any,
+    context: CodeGenerateContext
+  ): string {
+    if (!this.hasRequestBody(method, requestBody)) {
       return '';
     }
-    
-    return `json request_body = ${JSON.stringify(requestBody, null, 8)};`;
+
+    if (this.isBinaryRequestBody(context)) {
+      return `std::string request_body = readBinaryFile("${this.escapeDoubleQuoted(
+        this.getBinaryRequestBodyFileName(requestBody)
+      )}");`;
+    }
+
+    if (this.usesStringRequestBody(context)) {
+      return `std::string request_body = "${this.escapeDoubleQuoted(
+        this.serializeStringRequestBody(requestBody, context)
+      )}";`;
+    }
+
+    if (this.isMultipartRequestBody(context)) {
+      return this.buildMultipartRequestBodyCode(requestBody);
+    }
+
+    const jsonBody = JSON.stringify(requestBody, null, 2);
+    return `json request_body = json::parse(${this.toCppStringLiteral(
+      jsonBody
+    )});`;
+  }
+
+  private buildRequestExecutionCode(
+    method: HttpMethod,
+    requestBody: any,
+    context: CodeGenerateContext
+  ): string {
+    if (!this.hasRequestBody(method, requestBody)) {
+      if (method === 'GET') {
+        return 'auto response = cli.Get(path.c_str(), headers);';
+      }
+
+      if (method === 'DELETE') {
+        return 'auto response = cli.Delete(path.c_str(), headers);';
+      }
+
+      return `auto response = cli.${this.toMethodName(
+        method
+      )}(path.c_str(), headers);`;
+    }
+
+    const contentType = context.requestContentType || 'application/json';
+    const bodyValue =
+      this.usesStringRequestBody(context) || this.isBinaryRequestBody(context)
+        ? 'request_body'
+        : 'request_body.dump()';
+
+    if (this.isMultipartRequestBody(context)) {
+      return `auto response = cli.${this.toMethodName(
+        method
+      )}(path.c_str(), headers, request_body, "multipart/form-data; boundary=${this.buildMultipartBoundary()}");`;
+    }
+
+    return `auto response = cli.${this.toMethodName(
+      method
+    )}(path.c_str(), headers, ${bodyValue}, "${contentType}");`;
+  }
+
+  private buildMultipartRequestBodyCode(requestBody: any): string {
+    const rawBody = this.buildRawMultipartBody(
+      this.getMultipartParts(requestBody)
+    );
+
+    return `const std::string boundary = "${this.buildMultipartBoundary()}";
+    std::string request_body = R"SDKWORK(${rawBody})SDKWORK";`;
+  }
+
+  private hasRequestBody(method: HttpMethod, requestBody: any): boolean {
+    return (
+      ['POST', 'PUT', 'PATCH'].includes(method) &&
+      requestBody !== undefined &&
+      requestBody !== null
+    );
+  }
+
+  private toMethodName(method: HttpMethod): string {
+    return method.charAt(0) + method.slice(1).toLowerCase();
+  }
+
+  private escapeDoubleQuoted(value: string): string {
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\r?\n/g, '\\n');
   }
 }

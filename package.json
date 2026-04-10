@@ -1,10 +1,17 @@
 {
   "name": "sdkwork-code-generator",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A modern code generator based on OpenAPI 3.x standard, supporting multiple programming languages SDK and HTTP request code generation",
-  "main": "dist/index.js",
-  "module": "dist/index.esm.js",
+  "main": "dist/index.umd.js",
+  "module": "dist/index.es.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.es.js",
+      "require": "./dist/index.umd.js"
+    }
+  },
   "files": [
     "dist"
   ],
@@ -15,9 +22,9 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "lint": "eslint src/**/*.ts",
-    "lint:fix": "eslint src/**/*.ts --fix",
-    "format": "prettier --write src/**/*.ts",
+    "lint": "eslint src/index.ts src/openapi/**/*.ts src/types/**/*.ts src/utils/**/*.ts src/mcp/**/*.ts src/sdk/**/*.ts",
+    "lint:fix": "eslint src/index.ts src/openapi/**/*.ts src/types/**/*.ts src/utils/**/*.ts src/mcp/**/*.ts src/sdk/**/*.ts --fix",
+    "format": "prettier --write src/index.ts src/openapi/**/*.ts src/types/**/*.ts src/utils/**/*.ts src/mcp/**/*.ts src/sdk/**/*.ts",
     "prepare": "husky install"
   },
   "keywords": [
@@ -56,10 +63,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/sdkwork/sdkwork-code-generator.git"
+    "url": "https://github.com/Sdkwork-Cloud/sdkwork-code-generator.git"
   },
   "bugs": {
-    "url": "https://github.com/sdkwork/sdkwork-code-generator/issues"
+    "url": "https://github.com/Sdkwork-Cloud/sdkwork-code-generator/issues"
   },
-  "homepage": "https://github.com/sdkwork/sdkwork-code-generator#readme"
+  "homepage": "https://github.com/Sdkwork-Cloud/sdkwork-code-generator#readme"
 }

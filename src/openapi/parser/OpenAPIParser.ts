@@ -21,7 +21,11 @@ export class OpenAPIParser extends BaseOpenAPISpecParser {
       try {
         return this.yamlParser.parse(spec);
       } catch (yamlError) {
-        throw new Error(`Failed to parse OpenAPI spec. Neither JSON nor YAML format is valid.\nJSON error: ${(jsonError as Error).message}\nYAML error: ${(yamlError as Error).message}`);
+        throw new Error(
+          `Failed to parse OpenAPI spec. Neither JSON nor YAML format is valid.\nJSON error: ${
+            (jsonError as Error).message
+          }\nYAML error: ${(yamlError as Error).message}`
+        );
       }
     }
   }
@@ -42,7 +46,9 @@ export class OpenAPIParser extends BaseOpenAPISpecParser {
       const content = await fs.readFile(filePath, 'utf-8');
       return this.yamlParser.parse(content);
     } else {
-      throw new Error(`Unsupported file format: ${filePath}. Supported formats: .json, .yaml, .yml`);
+      throw new Error(
+        `Unsupported file format: ${filePath}. Supported formats: .json, .yaml, .yml`
+      );
     }
   }
 }

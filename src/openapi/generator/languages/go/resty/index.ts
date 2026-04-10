@@ -1,40 +1,21 @@
 import { BaseRequestCodeGenerator } from '@/openapi/generator/generator';
-import { Language, HttpMethod, OpenAPIOperation, ExampleOpenAPIParameter, CodeGenerateContext } from '@/types';
+import {
+  CodeGenerateContext,
+  ExampleOpenAPIParameter,
+  HttpMethod,
+  Language,
+  OpenAPIOperation,
+} from '@/types';
 
-/**
- * Go resty HTTP请求代码生成器
- */
 export class RestyGoRequestCodeGenerator extends BaseRequestCodeGenerator {
-  
-  /**
-   * 获取目标编程语言
-   * @returns 编程语言标识符
-   */
   getLanguage(): Language {
     return 'go';
   }
 
-  /**
-   * 获取使用的HTTP库名称
-   * @returns HTTP库名称
-   */
   getLibrary(): string {
     return 'resty';
   }
 
-  /**
-   * 生成具体的HTTP请求代码
-   * @param path - 完整的请求Path
-   * @param method - 请求方法
-   * @param baseUrl - baseUrl
-   * @param operation - OpenAPI操作定义
-   * @param cookies - cookies示例数据
-   * @param headers - 请求头示例数据
-   * @param queryParams - 查询参数示例数据
-   * @param requestBody - 请求体示例数据
-   * @param context - 代码生成上下文
-   * @returns 生成的代码字符串
-   */
   generateCode(
     path: string,
     method: HttpMethod,
@@ -46,51 +27,90 @@ export class RestyGoRequestCodeGenerator extends BaseRequestCodeGenerator {
     requestBody: any,
     context: CodeGenerateContext
   ): string {
-    const operationId = operation.operationId || 'apiRequest';
-    const url = `${baseUrl}${path}`;
-    
+    const operationId = this.toIdentifier(
+      operation.operationId,
+      'apiRequest',
+      'camel'
+    );
+    const restyMethod = this.toPascalHttpMethod(method);
+    const url = this.escapeDoubleQuotedString(
+      this.buildRequestUrl(baseUrl, path)
+    );
+    const queryEncodingImport =
+      queryParams.length > 0 &&
+      !this.hasAllowReservedQueryParameters(queryParams)
+        ? '    neturl "net/url"\n'
+        : '';
+    const expectedSuccessStatusCode =
+      this.getExpectedSuccessStatusCode(context);
+    const successStatusCheck = this.usesAny2xxSuccessStatus(context)
+      ? 'resp.StatusCode() < 200 || resp.StatusCode() >= 300'
+      : `resp.StatusCode() != ${expectedSuccessStatusCode}`;
+    const handlesBinaryResponse = this.isBinaryResponse(context);
+    const responseType = handlesBinaryResponse
+      ? '[]byte'
+      : this.usesStringResponse(context)
+      ? 'string'
+      : 'map[string]interface{}';
+    const errorReturnValue = handlesBinaryResponse
+      ? 'nil'
+      : this.usesStringResponse(context)
+      ? '""'
+      : 'nil';
+    const responseHandlingCode = handlesBinaryResponse
+      ? `data := append([]byte(nil), resp.Body()...)
+    fmt.Printf("Response bytes: %d\\n", len(data))
+    return data, nil`
+      : this.usesStringResponse(context)
+      ? `data := string(resp.Body())
+    fmt.Println("Response:", data)
+    return data, nil`
+      : `var data map[string]interface{}
+    err = json.Unmarshal(resp.Body(), &data)
+    if err != nil {
+        return ${errorReturnValue}, fmt.Errorf("JSON unmarshal failed: %v", err)
+    }
+
+    fmt.Println("Response:", data)
+    return data, nil`;
+
     return `package main
 
 import (
     "encoding/json"
     "fmt"
     "log"
+${queryEncodingImport}    "os"
+    "strings"
     "github.com/go-resty/resty/v2"
 )
 
 /*
-${operation.summary || operation.description || 'API请求'}
-${operation.description ? ` * ${operation.description}` : ''}
+${operation.summary || operation.description || 'API request'}
+${operation.description || ''}
 */
 
-func ${operationId}() (map[string]interface{}, error) {
+func ${operationId}() (${responseType}, error) {
     client := resty.New()
     url := "${url}"
-    
-    ${this.buildQueryParamsCode(queryParams)}
-    
     req := client.R()
+
+    ${this.buildQueryParamsCode(queryParams)}
+
     ${this.buildCookiesCode(cookies, 'req')}
-    ${this.buildHeadersCode(headers, 'req')}
-    ${this.buildRequestBodyCode(method, requestBody, 'req')}
-    
-    resp, err := req.${method.toUpperCase()}("${url}")
+    ${this.buildHeadersCode(headers, 'req', method, requestBody, context)}
+    ${this.buildRequestBodyCode(method, requestBody, 'req', context)}
+
+    resp, err := req.${restyMethod}(url)
     if err != nil {
-        return nil, fmt.Errorf("HTTP request failed: %v", err)
+        return ${errorReturnValue}, fmt.Errorf("HTTP request failed: %v", err)
     }
-    
-    if resp.StatusCode() != 200 {
-        return nil, fmt.Errorf("HTTP error! status: %d", resp.StatusCode())
+
+    if ${successStatusCheck} {
+        return ${errorReturnValue}, fmt.Errorf("HTTP error! status: %d", resp.StatusCode())
     }
-    
-    var data map[string]interface{}
-    err = json.Unmarshal(resp.Body(), &data)
-    if err != nil {
-        return nil, fmt.Errorf("JSON unmarshal failed: %v", err)
-    }
-    
-    fmt.Println("Response:", data)
-    return data, nil
+
+    ${responseHandlingCode}
 }
 
 func main() {
@@ -98,63 +118,162 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
-    fmt.Println("Success:", result)
+    ${
+      handlesBinaryResponse
+        ? 'fmt.Printf("Success: %d bytes\\n", len(result))'
+        : 'fmt.Println("Success:", result)'
+    }
 }`;
   }
 
-  /**
-   * 构建cookies代码
-   */
-  private buildCookiesCode(cookies: ExampleOpenAPIParameter[], reqVar: string): string {
+  private buildCookiesCode(
+    cookies: ExampleOpenAPIParameter[],
+    reqVar: string
+  ): string {
     if (cookies.length === 0) {
       return '';
     }
-    
-    const cookieEntries = cookies.map(cookie => 
-      `"${cookie.name}=${cookie.value}"`
-    );
-    
-    return `${reqVar}.SetHeader("Cookie", "${cookieEntries.join('; ')}")`;
+
+    const cookieValue = this.buildCookieHeaderValue(cookies);
+
+    return `${reqVar}.SetHeader("Cookie", "${this.escapeDoubleQuoted(
+      cookieValue
+    )}")`;
   }
 
-  /**
-   * 构建查询参数代码
-   */
   private buildQueryParamsCode(queryParams: ExampleOpenAPIParameter[]): string {
-    if (queryParams.length === 0) {
+    if (this.hasAllowReservedQueryParameters(queryParams)) {
+      return `url += "?${this.escapeDoubleQuoted(
+        this.buildSerializedQueryString(queryParams)
+      )}"`;
+    }
+
+    const paramEntries = this.buildQueryParameterEntries(queryParams);
+
+    if (paramEntries.length === 0) {
       return '';
     }
-    
-    const paramEntries = queryParams.map(param => 
-      `req.SetQueryParam("${param.name}", "${param.value}")`
-    );
-    
-    return paramEntries.join('\n    ');
+
+    return `q := neturl.Values{}
+${paramEntries
+  .map(
+    (param) =>
+      `q.Add("${this.escapeDoubleQuoted(
+        param.name
+      )}", "${this.escapeDoubleQuoted(param.value)}")`
+  )
+  .join('\n')}
+    url += "?" + q.Encode()`;
   }
 
-  /**
-   * 构建请求头代码
-   */
-  private buildHeadersCode(headers: ExampleOpenAPIParameter[], reqVar: string): string {
-    if (headers.length === 0) {
-      return `${reqVar}.SetHeader("Content-Type", "application/json")`;
+  private buildHeadersCode(
+    headers: ExampleOpenAPIParameter[],
+    reqVar: string,
+    method: HttpMethod,
+    requestBody: any,
+    context: CodeGenerateContext
+  ): string {
+    const requestHeaders = [...headers];
+
+    if (
+      this.hasRequestBody(method, requestBody) &&
+      this.shouldAutoAddContentTypeHeader(context) &&
+      !requestHeaders.some(
+        (header) => header.name.toLowerCase() === 'content-type'
+      )
+    ) {
+      requestHeaders.push({
+        name: 'Content-Type',
+        in: 'header',
+        required: false,
+        schema: { type: 'string' },
+        value: context.requestContentType,
+      });
     }
-    
-    const headerEntries = headers.map(header => 
-      `${reqVar}.SetHeader("${header.name}", "${header.value}")`
-    );
-    
-    return headerEntries.join('\n    ');
-  }
 
-  /**
-   * 构建请求体代码
-   */
-  private buildRequestBodyCode(method: HttpMethod, requestBody: any, reqVar: string): string {
-    if (!['POST', 'PUT', 'PATCH'].includes(method) || !requestBody) {
+    if (requestHeaders.length === 0) {
       return '';
     }
-    
-    return `${reqVar}.SetBody(${JSON.stringify(requestBody, null, 8)})`;
+
+    return requestHeaders
+      .map(
+        (header) =>
+          `${reqVar}.SetHeader("${header.name}", "${this.escapeDoubleQuoted(
+            this.serializeHeaderParameterValue(header)
+          )}")`
+      )
+      .join('\n    ');
+  }
+
+  private buildRequestBodyCode(
+    method: HttpMethod,
+    requestBody: any,
+    reqVar: string,
+    context: CodeGenerateContext
+  ): string {
+    if (!this.hasRequestBody(method, requestBody)) {
+      return '';
+    }
+
+    if (this.isMultipartRequestBody(context)) {
+      const fieldParts = this.getMultipartFieldParts(requestBody);
+      const fileLines = this.getMultipartFileParts(requestBody).map(
+        (part) =>
+          `${reqVar}.SetFileReader("${this.escapeDoubleQuoted(
+            part.name
+          )}", "${this.escapeDoubleQuoted(
+            part.filename || part.name
+          )}", strings.NewReader("${this.escapeDoubleQuoted(part.value)}"))`
+      );
+
+      return `${reqVar}.SetFormData(map[string]string{
+        ${fieldParts
+          .map(
+            (part) =>
+              `"${this.escapeDoubleQuoted(
+                part.name
+              )}": "${this.escapeDoubleQuoted(part.value)}"`
+          )
+          .join(',\n        ')}
+    })
+    ${fileLines.join('\n    ')}`;
+    }
+
+    if (this.isBinaryRequestBody(context)) {
+      return `requestBody, err := os.ReadFile("${this.escapeDoubleQuoted(
+        this.getBinaryRequestBodyFileName(requestBody)
+      )}")
+    if err != nil {
+        return ${
+          this.usesStringResponse(context) ? '""' : 'nil'
+        }, fmt.Errorf("reading request body failed: %v", err)
+    }
+    ${reqVar}.SetBody(requestBody)`;
+    }
+
+    if (this.usesStringRequestBody(context)) {
+      return `${reqVar}.SetBody(${this.toGoStringLiteral(
+        this.serializeStringRequestBody(requestBody, context)
+      )})`;
+    }
+
+    return `${reqVar}.SetBody(${this.toGoStringLiteral(
+      JSON.stringify(requestBody, null, 2)
+    )})`;
+  }
+
+  private hasRequestBody(method: HttpMethod, requestBody: any): boolean {
+    return (
+      ['POST', 'PUT', 'PATCH'].includes(method) &&
+      requestBody !== undefined &&
+      requestBody !== null
+    );
+  }
+
+  private escapeDoubleQuoted(value: string): string {
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\r?\n/g, '\\n');
   }
 }

@@ -1,7 +1,13 @@
-import { defineConfig } from 'vite'
-import dts from 'vite-plugin-dts'
+import path from 'path';
+import { defineConfig } from 'vite';
+import dts from 'vite-plugin-dts';
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, './src'),
+    },
+  },
   build: {
     lib: {
       entry: 'src/index.ts',
@@ -9,7 +15,7 @@ export default defineConfig({
       fileName: (format) => `index.${format}.js`
     },
     rollupOptions: {
-      external: ['ajv', 'openapi-types', 'yaml'],
+      external: ['ajv', 'openapi-types', 'yaml', 'fs/promises'],
       output: {
         globals: {
           'ajv': 'Ajv',

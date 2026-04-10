@@ -11,6 +11,8 @@ export * from './ruby';
 export * from './swift';
 export * from './kotlin';
 export * from './dart';
+export * from './shell';
+export * from './rust';
 export * from './example';
 export * from './language-registry';
 

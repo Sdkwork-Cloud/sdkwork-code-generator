@@ -1,2 +1,2 @@
-// OpenAPI module placeholder
-export {};
+export * from './parser';
+export * from './generator';

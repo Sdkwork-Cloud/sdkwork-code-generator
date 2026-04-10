@@ -52,6 +52,27 @@ describe('Python Requests Generator', () => {
     expect(code).toContain('json=');
   });
 
+  test('should generate plain text POST bodies without json= payloads', () => {
+    const code = generator.generateCode(
+      BASE_TEST_CONFIG.path,
+      'POST',
+      BASE_TEST_CONFIG.baseUrl,
+      POST_TEST_OPERATION,
+      [],
+      [],
+      [],
+      'hello world',
+      {
+        ...BASE_TEST_CONFIG.context,
+        requestContentType: 'text/plain',
+      }
+    );
+
+    expect(code).toContain("headers={'Content-Type': 'text/plain'}");
+    expect(code).toContain("data='hello world'");
+    expect(code).not.toContain('json=');
+  });
+
   test('should handle path variables correctly', () => {
     const code = generator.generateCode(
       '/api/users/{userId}',
